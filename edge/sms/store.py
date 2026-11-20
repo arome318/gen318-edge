@@ -179,6 +179,34 @@ class SmsStore:
         keys = ("ref", "code", "severity", "asset_id", "raised_at", "cleared_at", "label")
         return [dict(zip(keys, r, strict=True)) for r in rows]
 
+    def get_meta(self, key: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, value))
+            self._conn.commit()
+
+    def labels_by_code(self, since: float = 0.0) -> dict[str, list[int]]:
+        """Latest label of each labelled alert, grouped by fault code, newest alert first.
+
+        Only labels received after ``since`` count (see RESET TUNING).
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT a.code, (SELECT l.label FROM labels l WHERE l.ref=a.ref AND l.received_at>=? "
+                "ORDER BY l.received_at DESC, l.id DESC LIMIT 1) AS label "
+                "FROM alerts a ORDER BY a.raised_at DESC, a.rowid DESC",
+                (since,),
+            ).fetchall()
+        out: dict[str, list[int]] = {}
+        for code, label in rows:
+            if label is not None:
+                out.setdefault(code, []).append(int(label))
+        return out
+
     def export_labelled(self) -> list[dict[str, Any]]:
         """Anonymised labelled alerts for the open fault dataset (no phone data)."""
         with self._lock:

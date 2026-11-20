@@ -1,7 +1,11 @@
-"""Edge inference service — subscribes MQTT telemetry, runs on-device ML (Doc 14).
+"""Edge inference service: on-site learning, plus optional operator-supplied models.
 
-Runs as the gen318-inference container. Periodically runs XGBoost models
-on buffered telemetry and publishes results to MQTT + SQLite.
+Runs as the gen318-inference container. On every box it trains and applies
+the on-site models (``sitelearn.py``) from the site's own readings.
+
+Separately, an operator who runs their own server (``CLOUD_API_URL``) can
+send signed fleet models to the box. That path is idle on a standalone box:
+with no server set and no model files present, nothing is run or written.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from common.model_manifest import parse_trusted_keys, verify_manifest
 from common.mqtt_client import (
     TOPIC_INFERENCE_RESULTS,
     TOPIC_SITELEARN,
+    TOPIC_SITELEARN_TUNING,
     TOPIC_MODEL_UPDATES,
     TOPIC_TELEMETRY,
     MQTTClient,
@@ -56,7 +61,10 @@ class InferenceService:
         self.sitelearn = SiteLearner(
             self.db,
             config.model_path,
-            SiteLearnConfig(utc_offset_hours=float(os.environ.get("SITE_UTC_OFFSET_HOURS", "1"))),
+            SiteLearnConfig(
+                utc_offset_hours=float(os.environ.get("SITE_UTC_OFFSET_HOURS", "1")),
+                runout_soc_pct=float(os.environ.get("SITE_RUNOUT_SOC_PCT", "10")),
+            ),
         )
         self._sitelearn_interval = float(os.environ.get("SITELEARN_INTERVAL_SECONDS", "900"))
         self._sitelearn_last = 0.0
@@ -74,6 +82,16 @@ class InferenceService:
             return
         self.mqtt.publish(TOPIC_SITELEARN, {"at": now, "findings": findings})
         logger.info("site_learning_cycle", findings=[f["code"] for f in findings])
+
+    def _on_tuning(self, payload: dict[str, Any]) -> None:
+        """Sensitivity steps the SMS service worked out from technician replies."""
+        steps = payload.get("steps")
+        if isinstance(steps, dict):
+            self.sitelearn.set_tuning(steps)
+
+    def _fleet_models_active(self) -> bool:
+        """True when an operator's server is set or its model files are on the box."""
+        return bool(self.config.cloud_api_url) or self.engine.has_models
 
     def _on_model_update(self, payload: dict[str, Any]) -> None:
         """Handle model update command from sync engine via MQTT.
@@ -282,12 +300,16 @@ class InferenceService:
         # Subscribe to model update commands from sync engine
         self.mqtt.subscribe(TOPIC_MODEL_UPDATES, self._on_model_update)
 
+        # Sensitivity steps from technician replies (SMS service)
+        self.mqtt.subscribe(TOPIC_SITELEARN_TUNING, self._on_tuning)
+
         self._running = True
         while self._running:
-            try:
-                await self._run_inference_cycle()
-            except Exception:
-                logger.exception("inference_cycle_error")
+            if self._fleet_models_active():
+                try:
+                    await self._run_inference_cycle()
+                except Exception:
+                    logger.exception("inference_cycle_error")
             await asyncio.to_thread(self._run_site_learning)
 
             await asyncio.sleep(self.config.inference_interval_seconds)

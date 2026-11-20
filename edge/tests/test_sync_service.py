@@ -1,4 +1,4 @@
-"""Tests for the sync service's MQTT→queue bridging (Doc 14 §8.6).
+"""Tests for the sync service's MQTT→queue bridging.
 
 The watchdog publishes tamper/critical alerts on gen318/alerts/critical
 (QoS 2); the sync service must land them in the P0 sync queue so they

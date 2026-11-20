@@ -1,4 +1,4 @@
-"""Edge hardware adapters package (Doc 15).
+"""Edge hardware adapters package.
 
 Provides concrete HardwareAdapter implementations for edge-side
 hardware communication: Victron MQTT/Modbus, BYD CAN bus, Okra Solar,

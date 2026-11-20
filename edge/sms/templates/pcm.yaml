@@ -17,6 +17,7 @@ faults:
   battery_degrading: "Battery voltage dey fall {drop_pct}% pass normal when load heavy. Check terminal, cable and cells."
   load_high: "Load too high: {actual_w}W, normal na about {expected_w}W. Check illegal connection or feeder fault."
   load_low: "Load too low: {actual_w}W, normal na about {expected_w}W. Check feeder breaker."
+  battery_runout: "Battery fit finish around {at} (about {hours}h from now). E dey {soc}% now. Reduce load or on gen before then."
 names:
   battery_critical: battery wey almost finish
   battery_low: battery wey low
@@ -33,6 +34,7 @@ names:
   battery_degrading: battery wey dey fall under load
   load_high: load wey too high
   load_low: load wey too low
+  battery_runout: battery wey fit finish this night
 recovered:
   battery_critical: battery don comot for danger level
   battery_low: battery don pass low level
@@ -49,6 +51,7 @@ recovered:
   battery_degrading: battery voltage don normal
   load_high: load don normal
   load_low: load don normal
+  battery_runout: battery no go finish again
 technician_suffix: " Reply 1=true 2=e no true 3=other #{ref}"
 cleared: "{site}: E don correct: {what}."
 status_on: "{site}: Light dey.{details}"
@@ -57,6 +60,9 @@ status_unknown: "{site}: Box never get new data."
 status_battery: " Battery {soc}%."
 status_solar: " Solar {solar_kw}kW."
 help: "Send POWER to know if light dey. Technician: reply 1, 2 or 3 for alert. Send LANG EN or LANG PCM to change language."
+tuned: "{site}: because of your false-alarm reply dem, '{name}' alert no go too quick again (step {steps} of {max_steps}). Reply 1 (true) or RESET TUNING to return am."
+tuned_back: "{site}: '{name}' alert don return to how installer set am."
+tuning_reset: "Alert setting don return to how installer set am."
 label_ok: "Thank you. Alert #{ref} na: {label}."
 label_none: "No recent alert to mark."
 lang_ok: "Language don change to Pidgin."

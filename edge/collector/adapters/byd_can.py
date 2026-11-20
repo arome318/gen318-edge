@@ -1,4 +1,4 @@
-"""BYD Battery-Box CAN bus adapter (Doc 15 §7.4, F-HW-07).
+"""BYD Battery-Box CAN bus adapter.
 
 Reads BYD BMS data via CAN bus (USB-CAN adapter, e.g., Canable, PEAK PCAN-USB).
 Protocol: CANopen / proprietary BYD BMS protocol at 500 kbps.

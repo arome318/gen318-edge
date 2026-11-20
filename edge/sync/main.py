@@ -1,4 +1,4 @@
-"""Edge sync service — main entry point (Doc 14).
+"""Edge sync service — main entry point.
 
 Runs as the gen318-sync container. Coordinates the sync engine,
 connectivity detector, and reverse SSH tunnel manager.

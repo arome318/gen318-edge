@@ -1,4 +1,4 @@
-"""Tests for adapter-related edge API endpoints (Doc 15 §5)."""
+"""Tests for adapter-related edge API endpoints."""
 
 from __future__ import annotations
 

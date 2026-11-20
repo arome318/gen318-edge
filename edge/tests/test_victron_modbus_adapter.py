@@ -1,4 +1,4 @@
-"""Tests for VictronModbusAdapter (Doc 15 §7.3, F-HW-03)."""
+"""Tests for VictronModbusAdapter."""
 
 from __future__ import annotations
 

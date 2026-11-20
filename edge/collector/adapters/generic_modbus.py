@@ -1,4 +1,4 @@
-"""YAML-configurable Modbus adapter for any Modbus TCP/RTU device (Doc 15 §7.6).
+"""YAML-configurable Modbus adapter for any Modbus TCP/RTU device.
 
 Two configuration styles, and both keep working:
 

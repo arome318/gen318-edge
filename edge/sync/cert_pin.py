@@ -1,4 +1,4 @@
-"""TLS certificate pinning for edge-to-cloud connections (Doc 14 §8.6, F-SEC-07).
+"""TLS certificate pinning for edge-to-cloud connections.
 
 Validates the cloud API's TLS certificate SHA-256 fingerprint against
 a pinned value injected at provisioning. Connection is refused if the

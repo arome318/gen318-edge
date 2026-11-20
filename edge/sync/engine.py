@@ -1,4 +1,4 @@
-"""4-tier priority sync engine with connectivity-aware behavior (Doc 14 §8.3).
+"""4-tier priority sync engine with connectivity-aware behavior.
 
 Syncs edge data to cloud via HTTPS with gzip compression and device
 certificate authentication. Adapts sync strategy based on detected
@@ -141,7 +141,7 @@ class SyncConfig:
     telemetry_max_batches_per_cycle: int = 10
     telemetry_recent_window_hours: int = 24
     # Synced/rejected rows older than this are pruned from SQLite.
-    telemetry_retention_hours: int = 72
+    telemetry_retention_hours: int = 1080  # 45 days: on-site models look back 30
     model_path: str = "/models"
     model_trusted_public_keys_json: str = "{}"
     model_artifact_max_bytes: int = 50 * 1024 * 1024
@@ -421,7 +421,7 @@ class SyncEngine:
         ).encode()
         compressed = gzip.compress(body, compresslevel=6)
 
-        # Doc 14 §8.3: cap batch bytes on the wire (P3 ≤ 5 MB) — size-split
+        # Cap batch bytes on the wire (P3 ≤ 5 MB) — size-split
         # oversized batches before sending.
         max_mb = self.config.backfill_max_batch_mb
         if max_mb and len(compressed) > max_mb * 1024 * 1024 and len(sendable) > 1:

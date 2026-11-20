@@ -45,9 +45,12 @@ services:
       - STORAGE_WARNING_USED_PCT=${STORAGE_WARNING_USED_PCT:-80}
       - STORAGE_CRITICAL_USED_PCT=${STORAGE_CRITICAL_USED_PCT:-90}
       - STORAGE_EMERGENCY_USED_PCT=${STORAGE_EMERGENCY_USED_PCT:-96}
+      # Standalone boxes keep this many days of readings (models look back 30).
+      - LOCAL_RETENTION_DAYS=${LOCAL_RETENTION_DAYS:-45}
+      - CLOUD_API_URL=${CLOUD_API_URL:-}
       - POLL_INTERVAL_SECONDS=60
       - DEVICE_ID=${DEVICE_ID}
-      # Register probe: opt-in, read-only mapping evidence (Doc 15 follow-up).
+      # Register probe: opt-in, read-only mapping evidence.
       # Host stays empty by default — set it to the GX device IP to enable.
       - EDGE_REGISTER_PROBE_ENABLED=${EDGE_REGISTER_PROBE_ENABLED:-false}
       - EDGE_REGISTER_PROBE_HOST=${EDGE_REGISTER_PROBE_HOST:-}
@@ -63,7 +66,7 @@ services:
     # RAM budget: ~150 MB (adapter instances + MQTT client)
 
   # Opt-in: only for a site with a CAN tap on the inverter-to-battery bus.
-  # Start it explicitly, the way MLflow is started in the cloud stack:
+  # Start it explicitly:
   #     docker compose --profile can up -d
   #
   # It exists as its own service rather than as another adapter inside the
@@ -133,10 +136,14 @@ services:
       - SITE_UTC_OFFSET_HOURS=${SITE_UTC_OFFSET_HOURS:-1}
       - SITELEARN_INTERVAL_SECONDS=${SITELEARN_INTERVAL_SECONDS:-900}
       - DEVICE_ID=${DEVICE_ID}
+      - SITE_RUNOUT_SOC_PCT=${SITE_RUNOUT_SOC_PCT:-10}
+      - CLOUD_API_URL=${CLOUD_API_URL:-}
       - MODEL_TRUSTED_PUBLIC_KEYS_JSON=${MODEL_TRUSTED_PUBLIC_KEYS_JSON:-{}}
     volumes:
       - inference_models:/models
-      - collector_data:/data:ro
+      # Read-write: on-site learning only reads, but a box that takes fleet
+      # models from an operator's server records their results here.
+      - collector_data:/data
     restart: always
     mem_limit: 256m
     cpus: 1.0
@@ -228,6 +235,8 @@ services:
       - collector_data:/data:ro
       - inference_models:/models:ro
       - sms_data:/data/sms:ro
+      - edge_metrics:/data/metrics:ro
+      - ./config/sms.yaml:/config/sms.yaml:ro
     restart: always
     mem_limit: 128m
     cpus: 0.5
@@ -245,6 +254,13 @@ services:
       - MQTT_HOST=mosquitto
       - MQTT_PORT=1883
       - TAMPER_GPIO_PIN=17
+      # The box's own energy use (local page, /energy). Estimated from CPU
+      # load unless BOX_MEASURED_WATTS holds a USB power meter reading.
+      - SITE_UTC_OFFSET_HOURS=${SITE_UTC_OFFSET_HOURS:-1}
+      - BOX_IDLE_WATTS=${BOX_IDLE_WATTS:-3.0}
+      - BOX_FULL_WATTS=${BOX_FULL_WATTS:-8.8}
+      - BOX_EXTRA_WATTS=${BOX_EXTRA_WATTS:-1.0}
+      - BOX_MEASURED_WATTS=${BOX_MEASURED_WATTS:-}
       - CLOUD_API_URL=${CLOUD_API_URL:-}
       - DEVICE_ID=${DEVICE_ID}
       - DEVICE_CERT_PATH=/certs/device.pem

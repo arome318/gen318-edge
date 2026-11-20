@@ -24,24 +24,38 @@ diesel bill.
   inverter overheating, cell imbalance, inverter error codes, overload,
   power off, genset running when the battery is full, and lost
   communication.
-- **Learns each site on the box.** After 7 to 14 days, three small XGBoost
+- **Learns each site on the box.** After 7 to 14 days, small XGBoost
   models train on the site's own data: the solar panels' best output by
-  time of day, the battery's normal voltage under load, and the normal load
-  band. They flag dirty or shaded panels, a battery sagging under load
-  (ageing cells or loose terminals) and unusual load (illegal connections,
-  tripped feeders). No data leaves the box. See `docs/SITE_LEARNING.md`,
-  including results on simulated sites and their limits.
+  time of day, the battery's normal voltage under load, the normal load
+  band, and the battery's usual discharge through the night. They flag
+  dirty or shaded panels, a battery sagging under load (ageing cells or
+  loose terminals) and unusual load (illegal connections, tripped
+  feeders). No data leaves the box. See `docs/SITE_LEARNING.md`, including
+  results on simulated sites and their limits.
+- **Warns before the lights go out.** From the present state of charge and
+  the site's usual night, the box works out when the bank will reach its
+  cut-off and texts the technician hours ahead ("Battery likely to run out
+  around 02:15"). This warning does not wait for morning.
 - **Sends SMS through a modem on the box.** Works on 2G. Alerts in English and
   Nigerian Pidgin (Hausa, Yoruba and Igbo planned). Warnings wait out quiet
   hours; critical alerts never wait. A daily summary at 7 pm.
 - **Answers anyone who texts POWER**, with the site status, the cause of an
   outage and whether the technician knows. Rate-limited to save airtime.
 - **Learns from technicians.** A technician replies `1` (real), `2` (false
-  alarm) or `3` (other cause) to an alert. Labels are stored on the box and
-  can be exported as an anonymised fault dataset. Phone numbers are only
-  ever stored as salted hashes.
+  alarm) or `3` (other cause) to an alert. Three false-alarm replies in the
+  last five make that warning less sensitive at that site, two steps at
+  most, and the technician is told by SMS. A reply of `1`, or `RESET
+  TUNING`, puts it back. Critical alerts are never loosened. Labels are
+  stored on the box and can be exported as an anonymised fault dataset.
+  Phone numbers are only ever stored as salted hashes.
 - **Shows a local page** at `http://<box>:8080` on the site Wi-Fi: open
-  alerts, labels and the latest readings.
+  alerts, labels, what the models have learned, any sensitivity changed by
+  replies, and the latest readings.
+- **Accounts for its own energy.** The box keeps a daily record of the
+  watts it draws and its share of the site's consumption (local page and
+  `/energy`), with the size of its models and the seconds they took to
+  train. The figure is an estimate from CPU load until you enter a USB
+  power meter reading (`BOX_MEASURED_WATTS`); the page says which.
 
 ## What it never does
 
@@ -50,7 +64,8 @@ diesel bill.
   release.
 - It never sends data anywhere unless you set `CLOUD_API_URL` to a server
   you choose. Left empty (the default), nothing leaves the box except the
-  SMS you configure.
+  SMS you configure. A standalone box keeps 45 days of readings
+  (`LOCAL_RETENTION_DAYS`) and deletes older ones itself.
 
 ## Try it in one minute (no hardware)
 
@@ -75,7 +90,7 @@ technician confirms, power returns) and prints every SMS that would be sent.
 
 ## Status
 
-This is early. The software is tested (920+ automated tests, simulators and
+This is early. The software is tested (940+ automated tests, simulators and
 emulated field protocols), but **every vendor map is marked `community`:
 transcribed from public sources and not yet polled on a physical unit.**
 Each map moves to `bench` and then `field` only with a validation record.
@@ -86,8 +101,8 @@ The first field pilot is under way in Nigeria.
 | Path | What |
 |---|---|
 | `edge/collector/` | Equipment adapters and vendor register maps |
-| `edge/inference/` | On-site learning (`sitelearn.py`), site simulator, model runtime |
-| `edge/sms/` | Fault rules, SMS alerts, POWER replies, technician labels |
+| `edge/inference/` | On-site learning (`sitelearn.py`), site simulator, optional runtime for an operator's own fleet models |
+| `edge/sms/` | Fault rules, SMS alerts, POWER replies, technician labels and tuning (`tuning.py`) |
 | `edge/api/` | Local page and JSON API on port 8080 |
 | `edge/sync/` | Optional store-and-forward sync to your own server |
 | `edge/watchdog/` | Container health, tamper switch |
@@ -101,7 +116,7 @@ cd edge && ../.venv/bin/python -m pytest -q
 
 ## Contributing
 
-The most useful contributions right now:
+See `CONTRIBUTING.md`. The most useful contributions right now:
 
 - **Verify a vendor map** on a real inverter you have access to, and send
   the result (see `edge/collector/adapters/vendor_maps/README.md`).

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -14,6 +15,7 @@ from sms.commands import parse
 from sms.rules import Fault, FaultTracker, SiteState, Thresholds, evaluate
 from sms.store import SmsStore, normalise_phone
 from sms.templates import Templates
+from sms.tuning import LEARNED_CODES, MAX_STEPS, decide, tuned_thresholds
 
 logger = structlog.get_logger()
 
@@ -39,6 +41,10 @@ class SmsConfig:
     help_per_day: int = 2
     notify_community_on: list[str] = field(default_factory=lambda: ["power_off"])
     quiet_hours: tuple[int, int] | None = (22, 6)
+    # Warnings that are useless in the morning, so they do not wait out quiet hours.
+    urgent_warnings: list[str] = field(default_factory=lambda: ["battery_runout"])
+    # Let technician replies (1 real, 2 false alarm) adjust warning sensitivity.
+    auto_tune: bool = True
     daily_summary_hour: int | None = 19
     hold_s: int = 120
     realert_s: int = 6 * 3600
@@ -67,6 +73,8 @@ class SmsConfig:
             help_per_day=int(d.get("help_per_day", 2)),
             notify_community_on=list(d.get("notify_community_on", ["power_off"])),
             quiet_hours=tuple(qh) if qh else None,  # type: ignore[arg-type]
+            urgent_warnings=list(d.get("urgent_warnings", ["battery_runout"]) or []),
+            auto_tune=bool(d.get("auto_tune", True)),
             daily_summary_hour=d.get("daily_summary_hour", 19),
             hold_s=int(d.get("hold_s", 120)),
             realert_s=int(d.get("realert_s", 6 * 3600)),
@@ -78,8 +86,11 @@ class SmsConfig:
 
 class SmsService:
     def __init__(self, cfg: SmsConfig, backend: SmsBackend, store: SmsStore,
-                 templates: Templates | None = None) -> None:
+                 templates: Templates | None = None,
+                 publish_tuning: Callable[[dict[str, Any]], None] | None = None) -> None:
         self.cfg = cfg
+        self._publish_tuning = publish_tuning
+        self._tuning_published_at = 0.0
         self.backend = backend
         self.store = store
         self.t = templates or Templates()
@@ -97,6 +108,47 @@ class SmsService:
         self._box_alert_last: dict[str, float] = {}
         self._learned: list[Fault] = []
         self._learned_at: float | None = None
+        self.tuning: dict[str, int] = {}
+        self.thresholds = cfg.thresholds
+        self._retune(announce=False)
+
+    # ── sensitivity from technician replies ─────────────────────
+    def _retune(self, announce: bool, now: float | None = None) -> None:
+        """Recompute steps from the stored labels; tell technicians what changed."""
+        if not self.cfg.auto_tune:
+            return
+        since = float(self.store.get_meta("tuning_reset_at") or 0.0)
+        new = decide(self.store.labels_by_code(since))
+        old, self.tuning = self.tuning, new
+        self.thresholds = tuned_thresholds(self.cfg.thresholds, new)
+        if new != old:
+            logger.info("sms_tuning_changed", steps=new)
+            self._tuning_published_at = 0.0  # tell the learned models on the next tick
+        if not announce:
+            return
+        now = time.time() if now is None else now
+        for code in sorted(set(old) | set(new)):
+            if old.get(code, 0) == new.get(code, 0):
+                continue
+            for c in self.cfg.technicians:
+                lang = self._lang_for(c)
+                name = self.t.render(lang, "names", code)
+                text = (self.t.render(lang, "tuned", site=self.cfg.site_name, name=name,
+                                      steps=new[code], max_steps=MAX_STEPS) if new.get(code)
+                        else self.t.render(lang, "tuned_back", site=self.cfg.site_name, name=name))
+                self._send(c.phone, text, "technician", "tuning", None, now)
+
+    def _share_tuning(self, now: float) -> None:
+        """Pass the steps for learned warnings to the inference container.
+
+        Repeated every ten minutes so a restarted container catches up without
+        the broker having to keep anything.
+        """
+        if self._publish_tuning is None or now - self._tuning_published_at < 600:
+            return
+        self._tuning_published_at = now
+        self._publish_tuning({"at": now, "steps": {k: v for k, v in self.tuning.items()
+                                                   if k in LEARNED_CODES}})
 
     # ── time helpers ────────────────────────────────────────────
     def _local_hour(self, now: float) -> int:
@@ -195,7 +247,7 @@ class SmsService:
     # ── status ──────────────────────────────────────────────────
     def _status_text(self, lang: str, now: float) -> str:
         site = self.cfg.site_name
-        th = self.cfg.thresholds
+        th = self.thresholds
         fresh = self.state.last_seen_s is not None and now - self.state.last_seen_s <= th.comms_lost_s
         if not fresh:
             return self.t.render(lang, "status_unknown", site=site)
@@ -226,7 +278,8 @@ class SmsService:
             self._min_soc_today = None
         self._day = day
 
-        faults = evaluate(self.state, self.cfg.thresholds, now, self.cfg.rated_power_w)
+        self._share_tuning(now)
+        faults = evaluate(self.state, self.thresholds, now, self.cfg.rated_power_w)
         outage = any(f.code == "power_off" for f in faults)
         faults += self._learned_faults(now)
         if self._last_tick is not None and self._outage_since is not None:
@@ -241,7 +294,7 @@ class SmsService:
         quiet = self._quiet(now)
         sent_now: set[str] = set()
         for f in to_alert:
-            if f.severity == "warning" and quiet:
+            if f.severity == "warning" and quiet and f.code not in self.cfg.urgent_warnings:
                 if all(key != f.key for _, key in self._deferred):
                     self._deferred.append((f, f.key))
             else:
@@ -309,7 +362,15 @@ class SmsService:
             self.store.record_label(ref, cmd.label, cmd.note, phone, now)
             labels = self.t.raw(lang, "labels")
             label = labels.get(str(cmd.label), str(cmd.label)) if isinstance(labels, dict) else str(cmd.label)
+            self._retune(announce=True, now=now)
             return self.t.render(lang, "label_ok", ref=ref, label=label)
+
+        if cmd.kind == "reset":
+            if not is_tech:
+                return None
+            self.store.set_meta("tuning_reset_at", repr(now))
+            self._retune(announce=False)
+            return self.t.render(lang, "tuning_reset")
 
         if cmd.kind == "lang" and cmd.lang in self.t.languages:
             self.store.set_lang(phone, cmd.lang)

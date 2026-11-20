@@ -1,4 +1,4 @@
-"""Tests for GenericModbusAdapter (Doc 15 §7.6, F-HW-09)."""
+"""Tests for GenericModbusAdapter."""
 
 from __future__ import annotations
 

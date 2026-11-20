@@ -1,4 +1,4 @@
-"""MQTT client wrapper for edge-side inter-container communication (Doc 14).
+"""MQTT client wrapper for edge-side inter-container communication.
 
 Wraps paho-mqtt with structured logging, exponential backoff reconnection,
 and typed topic constants for the Gen318 edge MQTT namespace.
@@ -25,6 +25,7 @@ TOPIC_WATCHDOG_RESTART = "gen318/watchdog/restart"
 TOPIC_CONTROL_SSH = "gen318/control/ssh"
 TOPIC_INFERENCE_RESULTS = "gen318/inference/results"
 TOPIC_SITELEARN = "gen318/sitelearn/findings"
+TOPIC_SITELEARN_TUNING = "gen318/sitelearn/tuning"
 TOPIC_MODEL_UPDATES = "gen318/model/updates"
 TOPIC_CONTROL_DIAGNOSTICS = "gen318/control/diagnostics"
 TOPIC_CONTROL_ADAPTER_RECONNECT = "gen318/control/adapter/reconnect"

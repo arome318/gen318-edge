@@ -13,6 +13,10 @@ public_status: true                # anyone can text POWER to the box's SIM for 
 status_per_hour: 3                 # replies per phone per hour (each reply costs airtime)
 notify_community_on: [power_off]
 quiet_hours: [22, 6]               # warnings wait until morning; critical alerts never wait
+urgent_warnings: [battery_runout]  # warnings that do not wait: "battery will run out around 02:00"
+auto_tune: true                    # 3 false-alarm replies in the last 5 make that warning less
+                                   # sensitive (2 steps at most; never for critical alerts).
+                                   # A reply of 1 (real) or RESET TUNING puts it back.
 daily_summary_hour: 19             # set to null to switch off
 hold_s: 120                        # a fault must last this long before an SMS goes out
 realert_s: 21600                   # repeat a fault still active after 6 hours

@@ -1,4 +1,4 @@
-"""Integration tests for CollectorService (Doc 15 §7.7).
+"""Integration tests for CollectorService.
 
 Tests the collector's adapter orchestration, ManagedAdapter tracking,
 AdapterSupervisor restart behavior, and readings flow to SQLite + MQTT.

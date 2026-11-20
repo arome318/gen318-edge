@@ -1,8 +1,11 @@
-"""Edge ML inference engine — loads and runs XGBoost models on-device (Doc 14 §8.2).
+"""Runtime for optional fleet models an operator sends from their own server.
 
-Supports battery health, battery RUL, inverter anomaly, demand forecast
-(all XGBoost 3.2.0 native), plus a rule-based dispatch advisory.
-SHA-256 verification before loading; accuracy-based auto-rollback.
+Not used on a standalone box: the on-site models live in ``sitelearn.py``
+and need none of this. When an operator sets ``CLOUD_API_URL``, signed
+XGBoost models (battery health, remaining life, inverter fault class,
+demand forecast) can be delivered to the box and run here, with SHA-256
+and golden-vector checks before a model is activated. The dispatch table
+is advice in a message only; nothing here switches equipment.
 """
 
 from __future__ import annotations
@@ -20,8 +23,8 @@ from common.database import EdgeDatabase
 
 logger = structlog.get_logger()
 
-# Model definitions mirror the cloud training constants exactly. A signed
-# contract must match these names/order before an artifact can activate.
+# Feature names and order each fleet model expects. A signed contract must
+# match these exactly before a delivered model can be activated.
 MODEL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "battery_health": {
         "file": "battery_health.ubj",
@@ -181,6 +184,10 @@ class InferenceEngine:
                 "xgboost_not_available",
                 msg="XGBoost not installed — inference will return defaults",
             )
+
+    @property
+    def has_models(self) -> bool:
+        return bool(self._models)
 
     def _compute_sha256(self, file_path: Path) -> str:
         """Compute SHA-256 hash of a file."""

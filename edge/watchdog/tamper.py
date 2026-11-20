@@ -1,4 +1,4 @@
-"""GPIO-based tamper detection for edge node enclosure (Doc 14 §8.6, F-EDGE-10).
+"""GPIO-based tamper detection for edge node enclosure.
 
 Monitors BCM pin 17 (configurable) connected to the IP65 enclosure
 lid switch. Falling edge triggers an immediate P0 critical alert

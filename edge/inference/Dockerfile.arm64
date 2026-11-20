@@ -7,13 +7,14 @@ LABEL description="Gen318 Edge Inference — XGBoost on-device ML inference"
 WORKDIR /app
 
 # Install system dependencies for sqlcipher
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libsqlcipher-dev && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
+# sqlcipher3 has no prebuilt wheel for linux/arm64, so pip compiles it:
+# gcc is installed for that step and removed again in the same layer.
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libsqlcipher-dev gcc && \
+    pip install --no-cache-dir -r requirements.txt && \
+    apt-get purge -y gcc && apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy common modules and service code
 COPY common/ /app/common/

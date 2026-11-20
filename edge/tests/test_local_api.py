@@ -133,8 +133,10 @@ class TestEdgeAPIEndpoints:
         assert all(e["severity"] == "critical" for e in resp.json())
 
     @pytest.mark.asyncio
-    async def test_diagnostics_run(self, api_client: AsyncClient) -> None:
-        resp = await api_client.post("/diagnostics/run")
+    async def test_diagnostics_run(self, api_client: AsyncClient, monkeypatch) -> None:
+        monkeypatch.setenv("LOCAL_API_TOKEN", "t0ken")
+        assert (await api_client.post("/diagnostics/run")).status_code == 401
+        resp = await api_client.post("/diagnostics/run", headers={"X-API-Token": "t0ken"})
         assert resp.status_code == 200
         assert resp.json()["status"] == "inference_triggered"
 
@@ -185,6 +187,15 @@ class TestEdgeAPIEndpoints:
         page = (await api_client.get("/")).text
         assert "6.0 W, 144.0 Wh a day (measured)" in page and "inverter hot" in page
 
+        store = SmsStore(str(tmp_path / "sms.db"))
+        store.record_delivery(None, "+2348030000001", "technician", "alert", True, now, "Kuje: Power is OFF <b>")
+        store.record_inbound("+2348030000009", "status", now + 1)
+        store.close()
+        msgs = (await api_client.get("/sms/messages")).json()
+        assert [m["direction"] for m in msgs[:2]] == ["in", "out"]
+        page = (await api_client.get("/")).text
+        assert "Kuje: Power is OFF &lt;b&gt;" in page and "Someone asked for power status" in page
+
     @pytest.mark.asyncio
     async def test_local_page_before_anything_is_recorded(
         self, api_client: AsyncClient, tmp_path, monkeypatch
@@ -196,4 +207,4 @@ class TestEdgeAPIEndpoints:
         assert (await api_client.get("/energy")).json()["available"] is False
         assert (await api_client.get("/sms/tuning")).json() == []
         page = (await api_client.get("/")).text
-        assert "Not enough samples yet" in page and "Nothing changed" in page
+        assert "Not enough samples yet" in page and "Nothing changed" in page and "No SMS yet" in page

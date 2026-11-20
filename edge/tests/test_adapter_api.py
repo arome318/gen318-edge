@@ -130,20 +130,30 @@ def test_get_adapter_readings_exists(api_client, edge_db) -> None:
 # ── POST /adapters/{name}/reconnect Tests ──────────────────────
 
 
-def test_reconnect_not_found(api_client) -> None:
+TOKEN = "test-token-123"
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
+
+
+@pytest.fixture
+def token(monkeypatch) -> str:
+    monkeypatch.setenv("LOCAL_API_TOKEN", TOKEN)
+    return TOKEN
+
+
+def test_reconnect_not_found(api_client, token) -> None:
     """Returns 404 for unknown adapter."""
-    response = api_client.post("/adapters/nonexistent/reconnect")
+    response = api_client.post("/adapters/nonexistent/reconnect", headers=AUTH)
     assert response.status_code == 404
 
 
-def test_reconnect_success(api_client, edge_db, mock_mqtt) -> None:
+def test_reconnect_success(api_client, edge_db, mock_mqtt, token) -> None:
     """Reconnect publishes MQTT command and returns success."""
     edge_db.set_config(
         "adapter.victron_mqtt.status",
         json.dumps({"name": "victron_mqtt", "status": "error"}),
     )
 
-    response = api_client.post("/adapters/victron_mqtt/reconnect")
+    response = api_client.post("/adapters/victron_mqtt/reconnect", headers=AUTH)
     assert response.status_code == 200
 
     data = response.json()
@@ -154,3 +164,62 @@ def test_reconnect_success(api_client, edge_db, mock_mqtt) -> None:
     mock_mqtt.publish.assert_called()
     call_args = mock_mqtt.publish.call_args
     assert "adapter/reconnect" in call_args[0][0]
+
+
+# ── Token on the POST endpoints ────────────────────────────────
+
+POSTS = ["/adapters/victron_mqtt/reconnect", "/diagnostics/run"]
+
+
+@pytest.fixture
+def adapter(edge_db) -> None:
+    edge_db.set_config(
+        "adapter.victron_mqtt.status",
+        json.dumps({"name": "victron_mqtt", "status": "error"}),
+    )
+
+
+@pytest.mark.parametrize("path", POSTS)
+def test_post_is_switched_off_when_no_token_is_configured(
+    api_client, mock_mqtt, adapter, monkeypatch, path
+) -> None:
+    monkeypatch.delenv("LOCAL_API_TOKEN", raising=False)
+    for headers in ({}, AUTH):
+        response = api_client.post(path, headers=headers)
+        assert response.status_code == 503
+        assert "LOCAL_API_TOKEN is not set" in response.json()["detail"]
+    monkeypatch.setenv("LOCAL_API_TOKEN", "   ")  # blank counts as not set
+    assert api_client.post(path, headers={"X-API-Token": ""}).status_code == 503
+    mock_mqtt.publish.assert_not_called()
+
+
+@pytest.mark.parametrize("path", POSTS)
+def test_post_needs_the_right_token(api_client, mock_mqtt, adapter, token, path) -> None:
+    missing = api_client.post(path)
+    assert missing.status_code == 401 and "Token required" in missing.json()["detail"]
+    for headers in ({"Authorization": "Bearer wrong"}, {"X-API-Token": "wrong"},
+                    {"Authorization": TOKEN}):  # no "Bearer " prefix
+        assert api_client.post(path, headers=headers).status_code == 401
+    mock_mqtt.publish.assert_not_called()
+
+    for headers in (AUTH, {"X-API-Token": TOKEN}, {"authorization": f"bearer {TOKEN}"}):
+        assert api_client.post(path, headers=headers).status_code == 200
+    assert mock_mqtt.publish.call_count == 3
+
+
+def test_reading_stays_open_without_a_token(api_client, adapter, monkeypatch) -> None:
+    """The page and the read-only JSON are for anyone on the site Wi-Fi."""
+    monkeypatch.delenv("LOCAL_API_TOKEN", raising=False)
+    for path in ("/adapters", "/adapters/victron_mqtt/readings", "/energy", "/sitelearn/status"):
+        assert api_client.get(path).status_code == 200
+
+
+def test_only_the_post_endpoints_change_anything() -> None:
+    """Every route that is not a plain read must carry the token guard."""
+    import api.main as api_mod
+
+    for route in api_mod.app.routes:
+        methods = getattr(route, "methods", set()) - {"GET", "HEAD", "OPTIONS"}
+        if methods:
+            guards = [d.call for d in route.dependant.dependencies]
+            assert api_mod.require_token in guards, route.path

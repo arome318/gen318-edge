@@ -1,4 +1,4 @@
-# Gen318 Edge Hardware Adapter Configuration (Doc 15)
+# Gen318 Edge Hardware Adapter Configuration
 #
 # Site-specific hardware configuration for the collector container.
 # Mount this file at /config/adapters.yaml (read-only) in docker-compose.

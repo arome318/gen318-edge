@@ -6,6 +6,7 @@ cloud connectivity. All data is read from local SQLite.
 
 from __future__ import annotations
 
+import hmac
 import os
 import json
 import time
@@ -16,7 +17,7 @@ from typing import Any
 import psutil
 import structlog
 import uvicorn
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from common.config import EdgeConfig, load_config
@@ -86,12 +87,50 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             "mqtt_unavailable",
             msg="MQTT broker not reachable — diagnostics endpoint disabled",
         )
+    if not os.environ.get(API_TOKEN_ENV, "").strip():
+        logger.warning("api_token_not_set",
+                       msg=f"{API_TOKEN_ENV} is not set: POST endpoints are switched off")
     logger.info("edge_api_started", device_id=_config.device_id)
     yield
     if _mqtt:
         _mqtt.disconnect()
     if _db:
         _db.close()
+
+
+API_TOKEN_ENV = "LOCAL_API_TOKEN"
+
+
+def require_token(
+    authorization: str | None = Header(default=None),
+    x_api_token: str | None = Header(default=None),
+) -> None:
+    """Guard for every endpoint that changes something (the POST endpoints).
+
+    Reading the page and the JSON stays open to anyone on the site Wi-Fi.
+    Anything that makes the box act needs the token set in LOCAL_API_TOKEN,
+    sent as ``Authorization: Bearer <token>`` or ``X-API-Token: <token>``.
+    With no token configured these endpoints are switched off, not left open.
+    """
+    expected = os.environ.get(API_TOKEN_ENV, "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail=(f"This action is switched off: {API_TOKEN_ENV} is not set on the box. "
+                    f"Set {API_TOKEN_ENV} in the box's .env file and restart the api container."),
+        )
+    supplied = (x_api_token or "").strip()
+    if not supplied and authorization and authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    if not supplied:
+        raise HTTPException(
+            status_code=401,
+            detail="Token required: send 'Authorization: Bearer <token>' or 'X-API-Token: <token>'.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Wrong token.",
+                            headers={"WWW-Authenticate": "Bearer"})
 
 
 app = FastAPI(
@@ -220,8 +259,6 @@ async def adapter_readings(name: str) -> list[dict[str, Any]]:
 
     raw = _db.get_config(f"adapter.{name}.status")
     if not raw:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail=f"Adapter '{name}' not found")
 
     # Get all latest readings and filter by adapter context
@@ -229,7 +266,7 @@ async def adapter_readings(name: str) -> list[dict[str, Any]]:
     return _db.get_latest_readings()
 
 
-@app.post("/adapters/{name}/reconnect")
+@app.post("/adapters/{name}/reconnect", dependencies=[Depends(require_token)])
 async def adapter_reconnect(name: str) -> dict[str, str]:
     """Force reconnect for a specific adapter.
 
@@ -240,13 +277,9 @@ async def adapter_reconnect(name: str) -> dict[str, str]:
     # Verify adapter exists
     raw = _db.get_config(f"adapter.{name}.status")
     if not raw:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail=f"Adapter '{name}' not found")
 
     if _mqtt is None or not _mqtt.is_connected:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=503, detail="MQTT broker unavailable")
 
     _mqtt.publish(
@@ -286,7 +319,7 @@ async def events(
     return _db.get_events(severity=severity, limit=limit)
 
 
-@app.post("/diagnostics/run")
+@app.post("/diagnostics/run", dependencies=[Depends(require_token)])
 async def run_diagnostics() -> dict[str, str]:
     """Trigger on-demand inference for all assets."""
     assert _mqtt is not None
@@ -348,6 +381,30 @@ def _sitelearn_status() -> dict[str, Any]:
 async def sitelearn_status() -> dict[str, Any]:
     """What the on-site models have learned so far (no raw data)."""
     return _sitelearn_status()
+
+
+INBOUND_NAMES = {"status": "asked for power status", "label": "marked an alert",
+                 "lang": "changed language", "reset": "reset alert sensitivity",
+                 "help": "asked for help", "unknown": "sent a message the box did not understand"}
+PAGE_REFRESH_SECONDS = max(2, int(os.environ.get("PAGE_REFRESH_SECONDS", "30")))
+
+
+def _sms_messages(limit: int = 20) -> list[dict[str, Any]]:
+    if not os.path.exists(SMS_DB_PATH):
+        return []
+    from sms.store import SmsStore
+
+    store = SmsStore(SMS_DB_PATH)
+    try:
+        return store.recent_messages(limit)
+    finally:
+        store.close()
+
+
+@app.get("/sms/messages")
+async def sms_messages(limit: int = Query(20, ge=1, le=200)) -> list[dict[str, Any]]:
+    """Recent SMS: text of what the box sent, kind of what it received (no phone numbers)."""
+    return _sms_messages(limit)
 
 
 def _sms_tuning() -> list[dict[str, Any]]:
@@ -465,6 +522,17 @@ async def technician_page() -> str:
         for k, v in sorted(_sitelearn_status().items())
         if isinstance(v, dict) and k.count(":") == 1 and "trained_at" in v
     )
+    def _when(ts: float) -> str:
+        return time.strftime("%d %b %H:%M:%S", time.gmtime(ts + 3600))
+
+    messages = "".join(
+        (f"<tr><td>{_esc(_when(m['at']))}</td><td>Box &rarr; {_esc(m['role'])}</td>"
+         f"<td>{_esc(m['text'] or '(' + m['kind'] + ')')}{'' if m['ok'] else ' <b>(not sent)</b>'}</td></tr>")
+        if m["direction"] == "out" else
+        (f"<tr class=\"in\"><td>{_esc(_when(m['at']))}</td><td>Phone &rarr; box</td>"
+         f"<td><i>Someone {_esc(INBOUND_NAMES.get(m['kind'], m['kind']))}</i></td></tr>")
+        for m in _sms_messages()
+    )
     tuning = "".join(
         f"<tr><td>{_esc(t['code'].replace('_', ' '))}</td><td>{_esc(t['steps'])} of {_esc(t['max_steps'])}</td>"
         f"<td>{_esc(t.get('was', '-'))}</td><td>{_esc(t.get('now', 'set by the model'))}</td></tr>"
@@ -484,13 +552,17 @@ async def technician_page() -> str:
                   if models["count"] else "No models trained yet.")
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="30"><title>Gen318 Edge</title>
+<meta http-equiv="refresh" content="{PAGE_REFRESH_SECONDS}"><title>Gen318 Edge</title>
 <style>body{{font-family:system-ui,sans-serif;margin:16px;color:#111;background:#fff}}
 table{{border-collapse:collapse;width:100%;font-size:14px;margin-bottom:24px}}
 td,th{{border-bottom:1px solid #ddd;padding:6px;text-align:left}}h1{{font-size:20px}}
-h2{{font-size:16px;margin-top:24px}}p{{color:#555;font-size:13px}}</style></head><body>
+h2{{font-size:16px;margin-top:24px}}p{{color:#555;font-size:13px}}
+tr.in td{{color:#555}}</style></head><body>
 <h1>Gen318 Edge &middot; {_esc(_config.device_id if _config else '')}</h1>
-<p>Works offline. Page refreshes every 30 seconds. Times are WAT.</p>
+<p>Works offline. Page refreshes every {PAGE_REFRESH_SECONDS} seconds. Times are WAT.</p>
+<h2>SMS</h2><p>What the box has sent, newest first. Phone numbers are never shown or stored.</p>
+<table><tr><th>Time</th><th>Who</th><th>Message</th></tr>
+{messages or '<tr><td colspan="3">No SMS yet.</td></tr>'}</table>
 <h2>Alerts</h2><p>To mark an alert, reply to its SMS: 1 = real, 2 = false alarm, 3 = other cause.</p>
 <table><tr><th>Ref</th><th>Fault</th><th>Level</th><th>Raised</th><th>Status</th><th>Marked</th></tr>
 {alerts or '<tr><td colspan="6">No alerts yet.</td></tr>'}</table>

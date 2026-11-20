@@ -7,16 +7,17 @@ LABEL description="Gen318 Edge Sync — 4-tier priority cloud sync with cert pin
 WORKDIR /app
 
 # Install system dependencies for sqlcipher and SSH
+# sqlcipher3 has no prebuilt wheel for linux/arm64, so pip compiles it:
+# gcc is installed for that step and removed again in the same layer.
+COPY requirements.txt /app/requirements.txt
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        libsqlcipher-dev \
+        libsqlcipher-dev gcc \
         openssh-client \
         modemmanager && \
+    pip install --no-cache-dir -r requirements.txt && \
+    apt-get purge -y gcc && apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy common modules and service code
 COPY common/ /app/common/

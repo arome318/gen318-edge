@@ -210,7 +210,7 @@ class SmsService:
     # ── outbound ────────────────────────────────────────────────
     def _send(self, phone: str, text: str, role: str, kind: str, ref: str | None, now: float) -> None:
         ok = self.backend.send(phone, text)
-        self.store.record_delivery(ref, phone, role, kind, ok, now)
+        self.store.record_delivery(ref, phone, role, kind, ok, now, text)
 
     def _lang_for(self, contact: Contact) -> str:
         return self.store.get_lang(contact.phone) or contact.lang or self.cfg.default_lang

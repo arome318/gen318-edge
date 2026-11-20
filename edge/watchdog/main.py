@@ -48,6 +48,10 @@ class WatchdogService:
     def __init__(self, config: EdgeConfig) -> None:
         self.config = config
         self.check_interval = config.check_interval
+        # CONTAINERS in the environment decides what is watched (docker-compose
+        # lists gen318-sms there); the class list is only the fallback.
+        if config.monitored_containers:
+            self.MONITORED_CONTAINERS = list(config.monitored_containers)
         self.mqtt = MQTTClient(
             host=config.mqtt_host,
             port=config.mqtt_port,

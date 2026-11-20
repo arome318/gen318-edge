@@ -2,6 +2,10 @@
 
 Phone numbers are never stored in clear: they are kept as salted SHA-256
 hashes, so the record can be shared for research without exposing anyone.
+
+The text of each SMS the box sends is kept, so the local page can show what
+was said. The text of what people send in is not: only the kind of message
+(a status request, a label) is recorded.
 """
 
 from __future__ import annotations
@@ -59,6 +63,13 @@ class SmsStore:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(SCHEMA)
+            columns = {r[1] for r in self._conn.execute("PRAGMA table_info(deliveries)")}
+            if "text" not in columns:
+                try:
+                    self._conn.execute("ALTER TABLE deliveries ADD COLUMN text TEXT NOT NULL DEFAULT ''")
+                    self._conn.commit()
+                except sqlite3.OperationalError:
+                    pass  # opened read-only (local page) before the SMS service upgraded it
             row = self._conn.execute("SELECT value FROM meta WHERE key='salt'").fetchone()
             if row is None:
                 self._salt = secrets.token_hex(16)
@@ -97,13 +108,34 @@ class SmsStore:
             self._conn.commit()
 
     def record_delivery(self, ref: str | None, phone: str, role: str, kind: str,
-                        ok: bool, now: float) -> None:
+                        ok: bool, now: float, text: str = "") -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO deliveries (ref, phone_hash, role, kind, sent_at, ok) VALUES (?,?,?,?,?,?)",
-                (ref, self.phone_hash(phone), role, kind, now, int(ok)),
+                "INSERT INTO deliveries (ref, phone_hash, role, kind, sent_at, ok, text) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (ref, self.phone_hash(phone), role, kind, now, int(ok), text),
             )
             self._conn.commit()
+
+    def recent_messages(self, limit: int = 20) -> list[dict[str, Any]]:
+        """SMS sent and received, newest first, for the local page (no phone numbers).
+
+        Sent messages carry their text. Received ones carry only their kind.
+        """
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT at, direction, role, kind, text, ok FROM ("
+                    " SELECT sent_at AS at, 'out' AS direction, role, kind, text, ok FROM deliveries"
+                    " UNION ALL"
+                    " SELECT received_at, 'in', '', kind, '', 1 FROM inbound"
+                    ") ORDER BY at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        keys = ("at", "direction", "role", "kind", "text", "ok")
+        return [dict(zip(keys, r, strict=True)) for r in rows]
 
     def latest_alert_ref_for(self, phone: str, since: float) -> str | None:
         with self._lock:

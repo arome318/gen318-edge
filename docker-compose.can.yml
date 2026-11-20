@@ -1,0 +1,13 @@
+# Only for a box that runs the CAN bridge (--profile can).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.can.yml --profile can up -d
+#
+# The CAN bridge shares the host's network namespace (a SocketCAN interface
+# cannot be handed to a container any other way), so it cannot see the
+# compose network and reaches the broker on the host's loopback instead.
+# This publishes the broker there and nowhere else: 127.0.0.1 is the box
+# itself, not the site network.
+services:
+  mosquitto:
+    ports:
+      - "127.0.0.1:1883:1883"

@@ -13,10 +13,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 PY=${PY:-.venv/bin/python}
 mkdir -p bench-data/sms bench-data/models
+# Every path below can be set in the environment first (tools/demo_video.sh
+# does, to keep its files in a temporary folder).
 export PYTHONPATH="$PWD/edge" MQTT_HOST=127.0.0.1 MQTT_PORT=1883 DEVICE_ID=${DEVICE_ID:-bench-001}
-export SQLITE_PATH="$PWD/bench-data/gen318.db" SQLITE_ENCRYPTION_KEY="" CLOUD_API_URL=""
-export ADAPTER_CONFIG_PATH="$PWD/config/adapters.yaml" MODEL_PATH="$PWD/bench-data/models"
-export SMS_CONFIG_PATH="$PWD/config/sms.yaml" SMS_DB_PATH="$PWD/bench-data/sms/sms.db"
+export SQLITE_PATH="${SQLITE_PATH:-$PWD/bench-data/gen318.db}" SQLITE_ENCRYPTION_KEY="" CLOUD_API_URL=""
+export ADAPTER_CONFIG_PATH="${ADAPTER_CONFIG_PATH:-$PWD/config/adapters.yaml}"
+export MODEL_PATH="${MODEL_PATH:-$PWD/bench-data/models}"
+export SMS_CONFIG_PATH="${SMS_CONFIG_PATH:-$PWD/config/sms.yaml}"
+export SMS_DB_PATH="${SMS_DB_PATH:-$PWD/bench-data/sms/sms.db}"
 export STORAGE_RESERVE_BYTES=${STORAGE_RESERVE_BYTES:-104857600}
 
 pids=()

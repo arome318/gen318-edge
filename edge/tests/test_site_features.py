@@ -354,3 +354,34 @@ def test_ledger_keeps_a_bounded_number_of_days(tmp_path: Path) -> None:
     for d in range(50):
         ledger.add(0.1, 3600, now=T0 + d * DAY_S)
     assert len(ledger.days) == 35 and read_ledger(tmp_path / "e.json")["method"] == "measured"
+
+
+# ── SMS on the local page ──────────────────────────────────────
+
+
+def test_sent_sms_text_is_kept_but_inbound_text_is_not(tmp_path: Path) -> None:
+    svc, _ = make_service(tmp_path)
+    svc.on_telemetry({"timestamp": T0 * 1000, "asset_id": "inv1", "metric_name": "battery.soc_pct", "value": 15})
+    svc.tick(T0 + 1)
+    reply = svc.handle_inbound("+2348030000009", "POWER please, my shop is dark", T0 + 2)
+    svc._send("+2348030000009", reply or "", "community", "reply", None, T0 + 3)
+    msgs = svc.store.recent_messages()
+    assert [m["direction"] for m in msgs] == ["out", "in", "out"]
+    assert "Power ON" in msgs[0]["text"] and "Battery low (15%)" in msgs[2]["text"]
+    assert msgs[1] == {"at": T0 + 2, "direction": "in", "role": "", "kind": "status", "text": "", "ok": 1}
+    assert "shop" not in json.dumps(msgs) and "2348030000009" not in json.dumps(msgs)
+
+
+def test_store_upgrades_an_older_database(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = str(tmp_path / "old.db")
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE deliveries (id INTEGER PRIMARY KEY AUTOINCREMENT, ref TEXT, phone_hash TEXT NOT NULL,"
+                 " role TEXT NOT NULL, kind TEXT NOT NULL, sent_at REAL NOT NULL, ok INTEGER NOT NULL)")
+    conn.execute("INSERT INTO deliveries (ref, phone_hash, role, kind, sent_at, ok) VALUES ('A','h','technician','alert',1.0,1)")
+    conn.commit()
+    conn.close()
+    store = SmsStore(path)
+    store.record_delivery(None, TECH, "technician", "summary", True, 2.0, "hello")
+    assert [m["text"] for m in store.recent_messages()] == ["hello", ""]

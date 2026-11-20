@@ -8,8 +8,10 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2.0
     container_name: gen318-mqtt
-    ports:
-      - "1883:1883"
+    # No published port: only the containers on this compose network use the
+    # broker, and it accepts anonymous clients, so it must not be reachable
+    # from the site network. (The CAN bridge is the one exception; see
+    # docker-compose.can.yml.)
     volumes:
       - mosquitto_data:/mosquitto/data
       - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
@@ -36,7 +38,7 @@ services:
       - MQTT_PORT=1883
       - ADAPTER_CONFIG_PATH=/config/adapters.yaml
       - SQLITE_PATH=/data/gen318.db
-      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY:-}
       - STORAGE_TARGET_DAYS=${STORAGE_TARGET_DAYS:-30}
       - STORAGE_EXPECTED_ASSETS=${STORAGE_EXPECTED_ASSETS:-10}
       - STORAGE_METRICS_PER_ASSET=${STORAGE_METRICS_PER_ASSET:-40}
@@ -49,7 +51,7 @@ services:
       - LOCAL_RETENTION_DAYS=${LOCAL_RETENTION_DAYS:-45}
       - CLOUD_API_URL=${CLOUD_API_URL:-}
       - POLL_INTERVAL_SECONDS=60
-      - DEVICE_ID=${DEVICE_ID}
+      - DEVICE_ID=${DEVICE_ID:-edge-node-001}
       # Register probe: opt-in, read-only mapping evidence.
       # Host stays empty by default — set it to the GX device IP to enable.
       - EDGE_REGISTER_PROBE_ENABLED=${EDGE_REGISTER_PROBE_ENABLED:-false}
@@ -66,8 +68,8 @@ services:
     # RAM budget: ~150 MB (adapter instances + MQTT client)
 
   # Opt-in: only for a site with a CAN tap on the inverter-to-battery bus.
-  # Start it explicitly:
-  #     docker compose --profile can up -d
+  # Start it explicitly, with the override that lets it reach the broker:
+  #     docker compose -f docker-compose.yml -f docker-compose.can.yml --profile can up -d
   #
   # It exists as its own service rather than as another adapter inside the
   # collector because a SocketCAN interface lives in a network namespace, and
@@ -94,12 +96,12 @@ services:
     network_mode: host
     environment:
       # Under host networking the broker is reachable on loopback, where
-      # mosquitto already publishes 1883.
+      # docker-compose.can.yml publishes 1883 (to the box itself only).
       - MQTT_HOST=127.0.0.1
       - MQTT_PORT=1883
       - SQLITE_PATH=/data/gen318.db
-      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
-      - DEVICE_ID=${DEVICE_ID}
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY:-}
+      - DEVICE_ID=${DEVICE_ID:-edge-node-001}
       - EDGE_CAN_INTERFACE=${EDGE_CAN_INTERFACE:-can0}
       - EDGE_CAN_BITRATE=${EDGE_CAN_BITRATE:-500000}
       - EDGE_CAN_PROFILE=${EDGE_CAN_PROFILE:-victron_generic}
@@ -131,11 +133,11 @@ services:
       - MQTT_PORT=1883
       - MODEL_PATH=/models
       - SQLITE_PATH=/data/gen318.db
-      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY:-}
       - INFERENCE_INTERVAL_SECONDS=300
       - SITE_UTC_OFFSET_HOURS=${SITE_UTC_OFFSET_HOURS:-1}
       - SITELEARN_INTERVAL_SECONDS=${SITELEARN_INTERVAL_SECONDS:-900}
-      - DEVICE_ID=${DEVICE_ID}
+      - DEVICE_ID=${DEVICE_ID:-edge-node-001}
       - SITE_RUNOUT_SOC_PCT=${SITE_RUNOUT_SOC_PCT:-10}
       - CLOUD_API_URL=${CLOUD_API_URL:-}
       - MODEL_TRUSTED_PUBLIC_KEYS_JSON=${MODEL_TRUSTED_PUBLIC_KEYS_JSON:-{}}
@@ -161,14 +163,14 @@ services:
       - MQTT_HOST=mosquitto
       - MQTT_PORT=1883
       - CLOUD_API_URL=${CLOUD_API_URL:-}
-      - DEVICE_ID=${DEVICE_ID}
+      - DEVICE_ID=${DEVICE_ID:-edge-node-001}
       - DEVICE_CERT_PATH=/certs/device.pem
       - DEVICE_KEY_PATH=/certs/device.key
       - CA_CERT_PATH=/certs/gen318-ca.pem
       - SQLITE_PATH=/data/gen318.db
-      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY:-}
       - SYNC_INTERVAL_SECONDS=60
-      - CERT_PIN_SHA256=${CERT_PIN_SHA256}
+      - CERT_PIN_SHA256=${CERT_PIN_SHA256:-}
       - MODEL_PATH=/models
       - MODEL_TRUSTED_PUBLIC_KEYS_JSON=${MODEL_TRUSTED_PUBLIC_KEYS_JSON:-{}}
       - MODEL_ARTIFACT_MAX_BYTES=${MODEL_ARTIFACT_MAX_BYTES:-52428800}
@@ -221,7 +223,7 @@ services:
       - MQTT_HOST=mosquitto
       - MQTT_PORT=1883
       - SQLITE_PATH=/data/gen318.db
-      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY:-}
       - STORAGE_TARGET_DAYS=${STORAGE_TARGET_DAYS:-30}
       - STORAGE_EXPECTED_ASSETS=${STORAGE_EXPECTED_ASSETS:-10}
       - STORAGE_METRICS_PER_ASSET=${STORAGE_METRICS_PER_ASSET:-40}
@@ -230,12 +232,22 @@ services:
       - STORAGE_WARNING_USED_PCT=${STORAGE_WARNING_USED_PCT:-80}
       - STORAGE_CRITICAL_USED_PCT=${STORAGE_CRITICAL_USED_PCT:-90}
       - STORAGE_EMERGENCY_USED_PCT=${STORAGE_EMERGENCY_USED_PCT:-96}
-      - DEVICE_ID=${DEVICE_ID}
+      - SMS_DB_PATH=/sms/sms.db
+      - SMS_CONFIG_PATH=/config/sms.yaml
+      - ENERGY_LEDGER_PATH=/metrics/energy.json
+      # Needed for the POST endpoints (reconnect an adapter, run diagnostics).
+      # Left empty they answer 503 and say so; the page itself stays open.
+      - LOCAL_API_TOKEN=${LOCAL_API_TOKEN:-}
+      - PAGE_REFRESH_SECONDS=${PAGE_REFRESH_SECONDS:-30}
+      - DEVICE_ID=${DEVICE_ID:-edge-node-001}
     volumes:
-      - collector_data:/data:ro
+      # Read-write although the page only reads: the database is in SQLite's
+      # write-ahead mode, and a reader must be able to write its -shm file.
+      # Mounted read-only, the api cannot open the database at all.
+      - collector_data:/data
       - inference_models:/models:ro
-      - sms_data:/data/sms:ro
-      - edge_metrics:/data/metrics:ro
+      - sms_data:/sms:ro
+      - edge_metrics:/metrics:ro
       - ./config/sms.yaml:/config/sms.yaml:ro
     restart: always
     mem_limit: 128m
@@ -262,7 +274,7 @@ services:
       - BOX_EXTRA_WATTS=${BOX_EXTRA_WATTS:-1.0}
       - BOX_MEASURED_WATTS=${BOX_MEASURED_WATTS:-}
       - CLOUD_API_URL=${CLOUD_API_URL:-}
-      - DEVICE_ID=${DEVICE_ID}
+      - DEVICE_ID=${DEVICE_ID:-edge-node-001}
       - DEVICE_CERT_PATH=/certs/device.pem
       - DEVICE_KEY_PATH=/certs/device.key
     volumes:

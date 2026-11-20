@@ -32,7 +32,7 @@ pyyaml==6.0.2
 # Structured logging
 structlog==24.4.0
 
-# Hardware adapters (Doc 15)
+# Hardware adapters
 aiomqtt>=2.0.0
 pymodbus>=3.6.0,<4
 # pymodbus 3.x makes the serial backend an OPTIONAL extra, and every

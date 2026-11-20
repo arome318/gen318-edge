@@ -48,9 +48,12 @@ diesel bill.
   TUNING`, puts it back. Critical alerts are never loosened. Labels are
   stored on the box and can be exported as an anonymised fault dataset.
   Phone numbers are only ever stored as salted hashes.
-- **Shows a local page** at `http://<box>:8080` on the site Wi-Fi: open
-  alerts, labels, what the models have learned, any sensitivity changed by
-  replies, and the latest readings.
+- **Shows a local page** at `http://<box>:8080` on the site Wi-Fi: the SMS
+  the box has sent, open alerts, labels, what the models have learned, any
+  sensitivity changed by replies, and the latest readings. Reading is open
+  to anyone on the site network; the two actions (reconnect an adapter,
+  run diagnostics) need the token you set in `LOCAL_API_TOKEN`. The
+  internal message broker is not reachable from outside the box.
 - **Accounts for its own energy.** The box keeps a daily record of the
   watts it draws and its share of the site's consumption (local page and
   `/energy`), with the size of its models and the seconds they took to
@@ -77,6 +80,10 @@ python3.12 -m venv .venv && .venv/bin/pip install -r edge/requirements-dev.txt
 This plays a simulated evening at a mini-grid (battery falls, power cuts,
 technician confirms, power returns) and prints every SMS that would be sent.
 
+On a Mac, `tools/demo_video.sh` runs the whole box against a pretend
+inverter and opens the local page: pull the "cable" and watch the SMS
+arrive, or text POWER to it. No Docker, inverter or SIM needed.
+
 ## Run it on a site
 
 1. Hardware: a Raspberry Pi 5 (4 GB or more) or any 64-bit Linux box, a
@@ -90,7 +97,7 @@ technician confirms, power returns) and prints every SMS that would be sent.
 
 ## Status
 
-This is early. The software is tested (940+ automated tests, simulators and
+This is early. The software is tested (950+ automated tests, simulators and
 emulated field protocols), but **every vendor map is marked `community`:
 transcribed from public sources and not yet polled on a physical unit.**
 Each map moves to `bench` and then `field` only with a validation record.

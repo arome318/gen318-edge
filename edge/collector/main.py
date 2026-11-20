@@ -1,4 +1,4 @@
-"""Edge collector service — orchestrates hardware adapters (Doc 14 + Doc 15).
+"""Edge collector service — orchestrates hardware adapters.
 
 Runs as the gen318-collector container. Instantiates hardware adapters
 from YAML configuration, manages their lifecycle via ManagedAdapter
@@ -218,6 +218,7 @@ class CollectorService:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._last_storage_check_at = 0.0
         self._last_storage_pressure: StoragePressure | None = None
+        self._last_local_prune_at = 0.0
 
     def _storage_policy(self) -> StoragePolicy:
         return StoragePolicy(
@@ -265,6 +266,8 @@ class CollectorService:
                         runway_days=status.estimated_runway_days,
                     )
 
+            self._prune_standalone(now)
+
             if status.pressure != self._last_storage_pressure:
                 logger.warning(
                     "storage_pressure_changed",
@@ -280,6 +283,20 @@ class CollectorService:
                 self._last_storage_pressure = status.pressure
         except Exception:
             logger.exception("storage_assessment_failed")
+
+    def _prune_standalone(self, now: float) -> None:
+        """With no server set, keep a fixed window of history and drop the rest.
+
+        Hourly. Only on a standalone box: one that syncs keeps every unsynced
+        row until its server confirms it (see ``_maintain_storage``).
+        """
+        if self.config.cloud_api_url or now - self._last_local_prune_at < 3600:
+            return
+        self._last_local_prune_at = now
+        days = max(int(self.config.local_retention_days), 1)
+        pruned = self.db.prune_local_history(int((now - days * 86400) * 1000))
+        if any(pruned.values()):
+            logger.info("standalone_history_pruned", retention_days=days, **pruned)
 
     def _load_adapter_config(self) -> list[dict[str, Any]]:
         """Load adapter definitions from YAML config file."""
@@ -457,9 +474,8 @@ class CollectorService:
     def _detect_power_quality(self, readings: list[Reading]) -> None:
         """Feed readings to the PQ excursion detector and queue any events.
 
-        Best-effort and isolated from the collection path on purpose (Doc 15
-        invariant 1): a detector bug must never block or fail telemetry
-        storage, so this always runs AFTER readings are already durable in
+        Best-effort and isolated from the collection path on purpose: a
+        detector bug must never block or fail telemetry storage, so this always runs AFTER readings are already durable in
         SQLite and never raises.
         """
         try:

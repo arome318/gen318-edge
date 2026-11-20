@@ -1,4 +1,4 @@
-"""Tests for BYDCANAdapter (Doc 15 §7.4, F-HW-07)."""
+"""Tests for BYDCANAdapter."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Hybrid connectivity detection using modem + latency probes (Doc 14 §8.4).
+"""Hybrid connectivity detection using modem + latency probes.
 
 Primary: mmcli (ModemManager) for instant access technology / RSSI
 detection with zero data cost. Fallback: HTTP latency probe every

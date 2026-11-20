@@ -1,4 +1,4 @@
-"""On-demand reverse SSH tunnel for remote edge node access (Doc 14 §8.8).
+"""On-demand reverse SSH tunnel for remote edge node access.
 
 Two channels open a tunnel: the cloud's heartbeat-response command (the wired
 path, applied on the asyncio loop by ``SyncService._handle_cloud_commands``)

@@ -1,4 +1,4 @@
-"""Victron Modbus TCP adapter for direct register-level access (Doc 15 §7.3, F-HW-03).
+"""Victron Modbus TCP adapter for direct register-level access.
 
 Reads all registers for Unit IDs 100 (System), 225 (Battery Monitor),
 246 (VE.Bus/Multi/Quattro), and 247 (Solar Charger/MPPT) via the

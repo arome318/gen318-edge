@@ -1,4 +1,4 @@
-"""Hardware adapter abstract interface for edge node (Doc 15).
+"""Hardware adapter abstract interface for edge node.
 
 Mirrors backend/app/adapters/base.py for edge self-containment.
 The edge runs in Docker containers on RPi 5 with no access to the

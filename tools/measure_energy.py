@@ -8,14 +8,24 @@ load power. Defaults are for a Raspberry Pi 5 (about 3.0 W idle, 8.8 W with
 all cores busy; raspberry.tips, 2026). Add your modem and RS-485 adapters
 with --extra-watts. For a measured figure, read a USB power meter instead and
 pass it with --measured-watts.
+
+The running box keeps the same figure day by day (watchdog, shown on the
+local page and at /energy). Set BOX_MEASURED_WATTS there to replace the
+estimate with your meter reading.
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 import time
+from pathlib import Path
 
 import psutil
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "edge"))
+
+from common.energy import PowerModel  # noqa: E402
 
 
 def main() -> None:
@@ -36,7 +46,7 @@ def main() -> None:
         while time.monotonic() < end:
             samples.append(psutil.cpu_percent(interval=5))
         load = sum(samples) / len(samples) / 100
-        watts = a.idle_watts + load * (a.full_watts - a.idle_watts) + a.extra_watts
+        watts = PowerModel(a.idle_watts, a.full_watts, a.extra_watts).watts(load)
         method = f"estimated from average CPU load {load:.1%} over {a.minutes:g} min"
 
     wh_day = watts * 24

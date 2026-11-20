@@ -1,4 +1,4 @@
-"""OTA contract tests for the inference service (Doc 14 §8.7, F-EDGE-09).
+"""OTA contract tests for the inference service.
 
 firmware_version is what check_for_ota() compares against the cloud target
 to decide whether an update is still pending — it must be stamped only when

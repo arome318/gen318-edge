@@ -1,4 +1,4 @@
-"""Edge watchdog service — container health monitor + tamper detection (Doc 14 §8.7).
+"""Edge watchdog service — container health monitor + tamper detection.
 
 Runs as the gen318-watchdog container (privileged). Monitors the other
 5 containers via Docker SDK, restarts unhealthy ones within 60 seconds,
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +19,7 @@ import psutil
 import structlog
 
 from common.config import EdgeConfig, load_config
+from common.energy import EnergyLedger, PowerModel
 from common.mqtt_client import (
     TOPIC_ALERTS_CRITICAL,
     TOPIC_WATCHDOG_HEALTH,
@@ -53,6 +55,12 @@ class WatchdogService:
         )
         self._restart_counts: dict[str, int] = {}
         self._running = False
+        self.energy = EnergyLedger(
+            os.environ.get("ENERGY_LEDGER_PATH", "/data/metrics/energy.json"),
+            PowerModel.from_env(),
+            float(os.environ.get("SITE_UTC_OFFSET_HOURS", "1")),
+        )
+        self._energy_sampled_at: float | None = None
 
         try:
             self.docker_client = docker.from_env()
@@ -147,6 +155,8 @@ class WatchdogService:
             "temp_c": self._read_cpu_temperature(),
             "uptime_s": int(time.time() - psutil.boot_time()),
         }
+        system_metrics["box_watts"] = round(self._record_energy(system_metrics["cpu_pct"]), 2)
+        system_metrics["box_watts_method"] = self.energy.model.method
 
         # Publish to MQTT
         mqtt_payload = {
@@ -158,6 +168,14 @@ class WatchdogService:
 
         # Write shared status file for sync engine to read
         self._write_status_file(container_status, system_metrics)
+
+    def _record_energy(self, cpu_pct: float) -> float:
+        """Add the time since the last sample to today's energy total."""
+        now = time.time()
+        last, self._energy_sampled_at = self._energy_sampled_at, now
+        # Time the box was off is not counted: cap a gap at two check intervals.
+        seconds = self.check_interval if last is None else min(now - last, 2 * self.check_interval)
+        return self.energy.add(cpu_pct / 100.0, max(seconds, 0.0), now)
 
     def _write_status_file(
         self,

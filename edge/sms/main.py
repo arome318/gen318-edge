@@ -11,7 +11,13 @@ from pathlib import Path
 
 import structlog
 
-from common.mqtt_client import TOPIC_ALERTS_CRITICAL, TOPIC_SITELEARN, TOPIC_TELEMETRY, MQTTClient
+from common.mqtt_client import (
+    TOPIC_ALERTS_CRITICAL,
+    TOPIC_SITELEARN,
+    TOPIC_SITELEARN_TUNING,
+    TOPIC_TELEMETRY,
+    MQTTClient,
+)
 from sms.backends import make_backend
 from sms.service import SmsConfig, SmsService
 from sms.store import SmsStore
@@ -23,13 +29,13 @@ async def main() -> None:
     cfg = SmsConfig.from_yaml(Path(os.environ.get("SMS_CONFIG_PATH", "/config/sms.yaml")).read_text())
     db_path = os.environ.get("SMS_DB_PATH", "/data/sms/sms.db")
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    service = SmsService(cfg, make_backend(cfg.backend), SmsStore(db_path))
-
     mqtt = MQTTClient(
         host=os.environ.get("MQTT_HOST", "mosquitto"),
         port=int(os.environ.get("MQTT_PORT", "1883")),
         client_id="gen318-sms",
     )
+    service = SmsService(cfg, make_backend(cfg.backend), SmsStore(db_path),
+                         publish_tuning=lambda payload: mqtt.publish(TOPIC_SITELEARN_TUNING, payload))
     mqtt.connect()
     mqtt.subscribe(TOPIC_TELEMETRY, service.on_telemetry)
     mqtt.subscribe(TOPIC_ALERTS_CRITICAL, service.on_box_alert)

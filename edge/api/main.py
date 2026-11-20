@@ -1,4 +1,4 @@
-"""Edge local web UI — FastAPI on :8080 (Doc 14 §8.9, F-EDGE-07).
+"""Edge local web UI — FastAPI on :8080.
 
 Serves site dashboard, live metrics, and adapter status without
 cloud connectivity. All data is read from local SQLite.
@@ -336,16 +336,96 @@ def _sms_alerts(limit: int = 30) -> list[dict[str, Any]]:
 
 def _sitelearn_status() -> dict[str, Any]:
     path = os.path.join(_config.model_path if _config else "/models", "site_learning", "meta.json")
-    if not os.path.exists(path):
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
         return {}
-    with open(path) as fh:
-        return json.load(fh)
+    return data if isinstance(data, dict) else {}
 
 
 @app.get("/sitelearn/status")
 async def sitelearn_status() -> dict[str, Any]:
     """What the on-site models have learned so far (no raw data)."""
     return _sitelearn_status()
+
+
+def _sms_tuning() -> list[dict[str, Any]]:
+    """Warnings made less sensitive by technician replies (see sms/tuning.py)."""
+    cfg_path = os.environ.get("SMS_CONFIG_PATH", "/config/sms.yaml")
+    if not os.path.exists(SMS_DB_PATH):
+        return []
+    from sms.rules import Thresholds
+    from sms.store import SmsStore
+    from sms.tuning import decide, describe
+
+    base = Thresholds()
+    try:
+        import yaml
+
+        with open(cfg_path) as fh:
+            raw = yaml.safe_load(fh) or {}
+        if raw.get("auto_tune", True) is False:
+            return []
+        base = Thresholds.from_dict(raw.get("thresholds"))
+    except (OSError, ValueError):
+        pass  # page still shows the steps, against default thresholds
+    store = SmsStore(SMS_DB_PATH)
+    try:
+        since = float(store.get_meta("tuning_reset_at") or 0.0)
+        return describe(base, decide(store.labels_by_code(since)))
+    finally:
+        store.close()
+
+
+ENERGY_LEDGER_PATH = os.environ.get("ENERGY_LEDGER_PATH", "/data/metrics/energy.json")
+_SITE_LOAD_METRICS = ("system.ac_consumption_w", "load.power_w", "inverter.ac_output_power_w")
+
+
+def _site_wh_last_day() -> float | None:
+    """Energy the site consumed in the last 24 hours, from the stored load readings."""
+    if _db is None:
+        return None
+    total, found = 0.0, False
+    by_asset: dict[str, set[str]] = {}
+    for r in _db.get_latest_readings():
+        by_asset.setdefault(r["asset_id"], set()).add(r["metric_name"])
+    for asset, metrics in by_asset.items():
+        metric = next((m for m in _SITE_LOAD_METRICS if m in metrics), None)
+        if metric is None:
+            continue
+        ts, vals = _db.get_series(asset, metric, 24)
+        if len(ts) < 2:
+            continue
+        gaps = [min(float(b - a), 900.0) for a, b in zip(ts[:-1], ts[1:], strict=True)]
+        total += sum(float(v) * g for v, g in zip(vals[:-1], gaps, strict=True)) / 3600
+        found = True
+    return total if found else None
+
+
+def _energy() -> dict[str, Any]:
+    from common.energy import read_ledger, summarise
+
+    out = summarise(read_ledger(ENERGY_LEDGER_PATH), _site_wh_last_day())
+    learned = [v for v in _sitelearn_status().values() if isinstance(v, dict)]
+    out["models"] = {
+        "count": sum(1 for v in learned if "bytes" in v),
+        "bytes": sum(int(v.get("bytes", 0)) for v in learned),
+        "last_training_seconds": round(sum(float(v.get("fit_s", 0.0)) for v in learned), 2),
+    }
+    return out
+
+
+@app.get("/energy")
+async def energy() -> dict[str, Any]:
+    """What the box itself uses: watts, Wh per day, share of site energy, model size."""
+    return _energy()
+
+
+@app.get("/sms/tuning")
+async def sms_tuning() -> list[dict[str, Any]]:
+    """Warnings whose sensitivity technician replies have changed."""
+    return _sms_tuning()
 
 
 @app.get("/sms/alerts")
@@ -385,6 +465,23 @@ async def technician_page() -> str:
         for k, v in sorted(_sitelearn_status().items())
         if isinstance(v, dict) and k.count(":") == 1 and "trained_at" in v
     )
+    tuning = "".join(
+        f"<tr><td>{_esc(t['code'].replace('_', ' '))}</td><td>{_esc(t['steps'])} of {_esc(t['max_steps'])}</td>"
+        f"<td>{_esc(t.get('was', '-'))}</td><td>{_esc(t.get('now', 'set by the model'))}</td></tr>"
+        for t in _sms_tuning()
+    )
+    en = _energy()
+    if en.get("available"):
+        share = (f", about {_esc(en['share_of_site_pct'])}% of what the site used in the last day"
+                 if "share_of_site_pct" in en else "")
+        box_energy = (f"About {_esc(en['average_watts'])} W, {_esc(en['wh_per_day'])} Wh a day "
+                      f"({_esc(en['method'])}){share}.")
+    else:
+        box_energy = "Not enough samples yet (needs about an hour)."
+    models = en["models"]
+    box_models = (f"{_esc(models['count'])} model files, {_esc(round(models['bytes'] / 1024))} kB in all; "
+                  f"the last training took {_esc(models['last_training_seconds'])} s on this box."
+                  if models["count"] else "No models trained yet.")
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="30"><title>Gen318 Edge</title>
@@ -398,9 +495,16 @@ h2{{font-size:16px;margin-top:24px}}p{{color:#555;font-size:13px}}</style></head
 <table><tr><th>Ref</th><th>Fault</th><th>Level</th><th>Raised</th><th>Status</th><th>Marked</th></tr>
 {alerts or '<tr><td colspan="6">No alerts yet.</td></tr>'}</table>
 <h2>What this box has learned</h2>
-<p>Models train here from this site's own data: solar after 7 days, load after 7, battery after 14.</p>
+<p>Models train here from this site's own data: solar, load and battery run-out after 7 days, battery health after 14.</p>
 <table><tr><th>Model</th><th>Trained</th><th>Days of data</th></tr>
 {learned or '<tr><td colspan="3">Still collecting data.</td></tr>'}</table>
+<h2>Alert sensitivity changed by your replies</h2>
+<p>Three false-alarm replies in the last five make a warning less sensitive (two steps at most).
+A reply of 1 (real), or RESET TUNING, puts it back. Critical alerts never change.</p>
+<table><tr><th>Warning</th><th>Step</th><th>Installer set</th><th>Now</th></tr>
+{tuning or '<tr><td colspan="4">Nothing changed: all warnings are at the installer settings.</td></tr>'}</table>
+<h2>What this box itself uses</h2>
+<p>{box_energy}<br>{box_models}</p>
 <h2>Latest readings</h2>
 <table><tr><th>Asset</th><th>Metric</th><th>Value</th></tr>
 {rows or '<tr><td colspan="3">No readings yet.</td></tr>'}</table>

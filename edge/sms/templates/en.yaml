@@ -17,6 +17,7 @@ faults:
   battery_degrading: "Battery voltage drops {drop_pct}% more than normal at heavy load. Check terminals, cables and cells."
   load_high: "Unusual high load: {actual_w}W, normal is about {expected_w}W. Check for illegal connection or feeder fault."
   load_low: "Load unusually low: {actual_w}W, normal is about {expected_w}W. Check feeder breakers."
+  battery_runout: "Battery likely to run out around {at} (about {hours}h from now). It is {soc}% now. Reduce load or start genset before then."
 names:
   battery_critical: battery very low
   battery_low: battery low
@@ -33,6 +34,7 @@ names:
   battery_degrading: battery sagging under load
   load_high: unusual high load
   load_low: unusual low load
+  battery_runout: battery running out tonight
 recovered:
   battery_critical: battery out of critical level
   battery_low: battery back above low level
@@ -49,6 +51,7 @@ recovered:
   battery_degrading: battery voltage normal
   load_high: load back to normal
   load_low: load back to normal
+  battery_runout: battery no longer expected to run out
 technician_suffix: " Reply 1=real 2=false 3=other #{ref}"
 cleared: "{site}: OK again: {what}."
 status_on: "{site}: Power ON.{details}"
@@ -57,6 +60,9 @@ status_unknown: "{site}: No recent data from the monitoring box."
 status_battery: " Battery {soc}%."
 status_solar: " Solar {solar_kw}kW."
 help: "Send POWER for status. Technicians: reply 1, 2 or 3 to an alert. Send LANG EN or LANG PCM to change language."
+tuned: "{site}: after your false-alarm replies, '{name}' alerts are now less sensitive (step {steps} of {max_steps}). A reply of 1 (real) or RESET TUNING undoes this."
+tuned_back: "{site}: '{name}' alerts are back to the installer's setting."
+tuning_reset: "Alert sensitivity is back to the installer's settings."
 label_ok: "Thanks. Alert #{ref} marked: {label}."
 label_none: "No recent alert to mark."
 lang_ok: "Language set to English."

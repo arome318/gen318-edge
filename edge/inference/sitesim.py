@@ -35,6 +35,9 @@ class SimSite:
     pv_kw: float = 6.0
     bank_kwh: float = 15.0
     utc_offset_h: float = 1.0
+    # (day, factor): daytime load is multiplied by factor from that day, e.g.
+    # a mill or a school that closes. Panels are healthy; only demand changes.
+    load_scale_from: tuple[float, float] | None = None
 
     def run(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         rng = np.random.default_rng(self.seed)
@@ -57,6 +60,9 @@ class SimSite:
 
         load = 350 + 900 * ((hour >= 7) & (hour < 18)) + 1800 * ((hour >= 18) & (hour < 23))
         load = load * np.where(dow >= 5, 1.1, 1.0) * rng.normal(1, 0.12, n)
+        if self.load_scale_from is not None:
+            from_day, factor = self.load_scale_from
+            load = np.where((day >= from_day) & (hour >= 7) & (hour < 18), load * factor, load)
         if f.theft_day is not None:
             load = load + np.where((day >= f.theft_day) & (hour < 5), f.theft_w, 0.0)
         load = np.clip(load, 50, None)
@@ -77,7 +83,10 @@ class SimSite:
             served = 0.0 if off else load[k]
             net = pv[k] - served  # + charges
             if s >= 99 and net > 0:
+                # Bank full: an off-grid inverter throttles the panels down to
+                # the load. The reported solar power falls with it.
                 net = 0.0
+                pv[k] = served
             s = float(np.clip(s + net * STEP_S / 3600 / cap_wh * 100, 0, 100))
             ocv = 50.0 + 3.0 * s / 100 - 2.5 * np.exp(-s / 6) + 1.5 * np.exp((s - 100) / 3)
             current = net / ocv

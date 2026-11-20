@@ -1,4 +1,4 @@
-"""Tests for VictronMQTTAdapter (Doc 15 §7.2, F-HW-02)."""
+"""Tests for VictronMQTTAdapter."""
 
 from __future__ import annotations
 

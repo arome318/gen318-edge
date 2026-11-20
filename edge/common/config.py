@@ -1,4 +1,4 @@
-"""Edge node configuration loaded from environment variables (Doc 14 §10.1)."""
+"""Edge node configuration loaded from environment variables."""
 
 from __future__ import annotations
 
@@ -29,6 +29,9 @@ class EdgeConfig:
     storage_warning_used_pct: float = 80.0
     storage_critical_used_pct: float = 90.0
     storage_emergency_used_pct: float = 96.0
+    # Standalone boxes (no CLOUD_API_URL) keep this many days of readings.
+    # The on-site models look back 30 days, so do not go below about 35.
+    local_retention_days: int = 45
 
     # Adapters
     adapter_config_path: str = "/config/adapters.yaml"
@@ -45,7 +48,9 @@ class EdgeConfig:
     telemetry_batch_size: int = 1000
     telemetry_max_batches_per_cycle: int = 10
     telemetry_recent_window_hours: int = 24
-    telemetry_retention_hours: int = 72
+    # Synced rows are kept this long. The on-site models look back 30 days,
+    # so a syncing box must not delete its history after a few days.
+    telemetry_retention_hours: int = 1080
 
     # Collection
     poll_interval_seconds: int = 60
@@ -122,6 +127,7 @@ def load_config() -> EdgeConfig:
         storage_emergency_used_pct=float(
             os.environ.get("STORAGE_EMERGENCY_USED_PCT", "96")
         ),
+        local_retention_days=int(os.environ.get("LOCAL_RETENTION_DAYS", "45")),
         adapter_config_path=os.environ.get(
             "ADAPTER_CONFIG_PATH", "/config/adapters.yaml"
         ),
@@ -142,7 +148,7 @@ def load_config() -> EdgeConfig:
             os.environ.get("TELEMETRY_RECENT_WINDOW_HOURS", "24")
         ),
         telemetry_retention_hours=int(
-            os.environ.get("TELEMETRY_RETENTION_HOURS", "72")
+            os.environ.get("TELEMETRY_RETENTION_HOURS", "1080")
         ),
         poll_interval_seconds=int(os.environ.get("POLL_INTERVAL_SECONDS", "60")),
         register_probe_enabled=os.environ.get(

@@ -146,3 +146,54 @@ class TestEdgeAPIEndpoints:
         assert data["device_id"] == "test-api-001"
         assert data["sqlite_encryption_key"] == "***"
         assert data["cert_pin_sha256"] == "***"
+
+    @pytest.mark.asyncio
+    async def test_energy_and_tuning_on_the_local_page(
+        self, api_client: AsyncClient, edge_db, tmp_path, monkeypatch
+    ) -> None:
+        """The box reports its own energy use and any sensitivity changed by replies."""
+        import api.main as api_mod
+        from common.energy import EnergyLedger, PowerModel
+        from sms.store import SmsStore
+
+        now = time.time()
+        ledger = EnergyLedger(tmp_path / "energy.json", PowerModel(measured_watts=6.0))
+        for i in range(90):
+            ledger.add(0.2, 60, now=now - (90 - i) * 60)
+        # one hour of a steady 2 kW site load
+        edge_db.insert_measurements([
+            (int((now - 3600 + i * 60) * 1000), "asset-1", "load.power_w", 2000.0, 0) for i in range(61)
+        ])
+        store = SmsStore(str(tmp_path / "sms.db"))
+        for i in range(3):
+            ref = store.new_ref()
+            store.record_alert(ref, "inverter_hot", "warning", "asset-1", {"temp": 71}, now + i)
+            store.record_label(ref, 2, "", "+2348030000001", now + i)
+        store.close()
+        monkeypatch.setattr(api_mod, "ENERGY_LEDGER_PATH", str(tmp_path / "energy.json"))
+        monkeypatch.setattr(api_mod, "SMS_DB_PATH", str(tmp_path / "sms.db"))
+
+        data = (await api_client.get("/energy")).json()
+        assert data["method"] == "measured" and data["average_watts"] == 6.0
+        assert data["wh_per_day"] == 144.0
+        assert data["site_wh_last_day"] == pytest.approx(2000, rel=0.02)
+        assert data["share_of_site_pct"] == pytest.approx(7.2, rel=0.05)
+
+        tuning = (await api_client.get("/sms/tuning")).json()
+        assert tuning == [{"code": "inverter_hot", "steps": 1, "max_steps": 2, "was": "70 C", "now": "73 C"}]
+
+        page = (await api_client.get("/")).text
+        assert "6.0 W, 144.0 Wh a day (measured)" in page and "inverter hot" in page
+
+    @pytest.mark.asyncio
+    async def test_local_page_before_anything_is_recorded(
+        self, api_client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        import api.main as api_mod
+
+        monkeypatch.setattr(api_mod, "ENERGY_LEDGER_PATH", str(tmp_path / "none.json"))
+        monkeypatch.setattr(api_mod, "SMS_DB_PATH", str(tmp_path / "none.db"))
+        assert (await api_client.get("/energy")).json()["available"] is False
+        assert (await api_client.get("/sms/tuning")).json() == []
+        page = (await api_client.get("/")).text
+        assert "Not enough samples yet" in page and "Nothing changed" in page

@@ -1,4 +1,4 @@
-"""SQLCipher-encrypted local database for edge node (Doc 14 §5.2).
+"""SQLCipher-encrypted local database for edge node.
 
 Uses sqlcipher3 for AES-256-CBC encryption. Performance PRAGMAs tuned
 for >= 6,000 INSERT/s on RPi 5. Dead-letter handling after 10 failed
@@ -395,6 +395,27 @@ class EdgeDatabase:
             )
             self._conn.commit()
             return cursor.rowcount
+
+    def prune_local_history(self, older_than_ms: int) -> dict[str, int]:
+        """Standalone boxes only: delete everything older than the cutoff.
+
+        With no server configured nothing is ever marked synced, so
+        ``prune_synced_measurements`` never frees a row and the disk fills.
+        A standalone box has nowhere to send old rows; it keeps what its own
+        models and pages need and lets the rest go. Never call this on a box
+        that syncs: there the unsynced backlog is the only copy.
+        """
+        with self._lock:
+            assert self._conn is not None
+            counts = {}
+            for table, column in (("measurements", "timestamp"), ("events", "timestamp"),
+                                  ("sync_queue", "created_at")):
+                cursor = self._conn.execute(
+                    f"DELETE FROM {table} WHERE {column} < ?", (older_than_ms,)
+                )
+                counts[table] = cursor.rowcount
+            self._conn.commit()
+            return counts
 
     # ── Events ───────────────────────────────────────────────────
 

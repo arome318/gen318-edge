@@ -1,4 +1,4 @@
-"""Victron Energy MQTT adapter for real-time bidirectional data (Doc 15 §7.2, F-HW-02).
+"""Victron Energy MQTT adapter for real-time bidirectional data.
 
 Subscribes to a Victron GX device's local MQTT broker for real-time
 telemetry. The GX device (Cerbo GX, Venus GX) publishes data with

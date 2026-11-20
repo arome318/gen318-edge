@@ -18,20 +18,34 @@ the box trains three small XGBoost models on that site's own readings:
   odd hours can mean an illegal connection or a fault on a feeder; far below
   it with power on can mean a tripped feeder.
 
+* **Run-out**: the battery's usual net discharge by time of day, and how
+  many watt-hours one percent of charge is worth (both learned from the
+  site's own readings). Walking that forward from the present state of
+  charge gives the time the bank is likely to reach its cut-off, so the
+  technician hears before the lights go out, not after.
+
 Each model is a few hundred kilobytes, trains in seconds on a Raspberry Pi
 and never leaves the box. Findings are published as warnings for the SMS
 service; nothing here acts on equipment.
+
+Model files and ``meta.json`` are written to a temporary file and renamed,
+because these boxes lose power without warning; a damaged file is dropped
+and relearned instead of stopping the service.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
+import structlog
+
+logger = structlog.get_logger()
 
 SLOT_S = 900  # 15-minute slots
 DAY_S = 86400
@@ -73,6 +87,57 @@ class SiteLearnConfig:
     load_high_margin_w: float = 300.0
     load_low_factor: float = 0.4
     load_low_min_expected_w: float = 300.0
+    # Off-grid inverters throttle the panels once the bank is full, so those
+    # slots say nothing about panel health: leave them out of the solar model.
+    pv_full_soc_pct: float = 95.0
+    pv_strong_hours: tuple[float, float] = (9.0, 15.0)
+    pv_min_slots_per_day: int = 6
+    runout_min_days: int = 7
+    runout_window_days: int = 28
+    runout_retrain_hours: int = 24
+    runout_soc_pct: float = 10.0       # where the inverter cuts the output
+    runout_horizon_hours: float = 12.0
+    runout_alert_hours: float = 6.0    # only warn when it is this close
+    runout_min_soc_swing_pct: float = 100.0
+    # A bank that empties most nights is a sizing problem the technician
+    # already knows about; a nightly SMS would only teach them to ignore it.
+    runout_routine_days: int = 4       # of the last 7
+    # The forecast must pass the cut-off by this much before anyone is woken:
+    # a night predicted to end a point or two above empty is a coin toss.
+    runout_margin_pct: float = 5.0
+
+
+# Technician replies of "false alarm" loosen a learned warning by this much per
+# step (at most TUNING_MAX_STEPS). See sms/tuning.py for how steps are decided.
+TUNING_MAX_STEPS = 2
+
+
+def tuned_config(base: SiteLearnConfig, steps: dict[str, int]) -> SiteLearnConfig:
+    """Return ``base`` with each learned warning loosened by its step count."""
+    def n(code: str) -> int:
+        try:
+            return max(0, min(TUNING_MAX_STEPS, int(steps.get(code, 0))))
+        except (TypeError, ValueError):
+            return 0
+
+    return replace(
+        base,
+        pv_alert_ratio=base.pv_alert_ratio - 0.05 * n("pv_underperform"),
+        battery_alert_pct=base.battery_alert_pct * (1 + 0.25 * n("battery_degrading")),
+        load_high_factor=base.load_high_factor + 0.15 * n("load_high"),
+        load_low_factor=max(0.1, base.load_low_factor - 0.05 * n("load_low")),
+        runout_alert_hours=max(2.0, base.runout_alert_hours - 1.5 * n("battery_runout")),
+    )
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    """Write then rename, so a power cut leaves the old file or the new one."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 # ── series helpers ─────────────────────────────────────────────
@@ -156,19 +221,23 @@ def predict(model: Any, X: np.ndarray) -> np.ndarray:
 
 
 def pv_daily_peak_ratio(ts: np.ndarray, actual: np.ndarray, expected: np.ndarray,
-                        utc_offset_h: float) -> dict[int, float]:
+                        utc_offset_h: float, hours: tuple[float, float] = (9.0, 15.0),
+                        min_slots: int = 6) -> dict[int, float]:
     """Per local day: 90th percentile of actual/expected over strong-sun slots.
 
     Clouds pull most slots down but rarely the best ones; dust, shading or a
     dead string caps every slot, so this ratio separates the two.
     """
+    if len(ts) == 0:
+        return {}
     hour = local_hour(ts, utc_offset_h)
-    strong = (hour >= 10) & (hour <= 15) & (expected > 0.25 * max(float(np.max(expected)), 1.0))
+    strong = ((hour >= hours[0]) & (hour <= hours[1])
+              & (expected > 0.25 * max(float(np.max(expected)), 1.0)))
     days = local_day(ts, utc_offset_h)
     out: dict[int, float] = {}
     for d in np.unique(days[strong]):
         sel = strong & (days == d)
-        if sel.sum() >= 8:
+        if sel.sum() >= min_slots:
             out[int(d)] = float(np.percentile(actual[sel] / np.maximum(expected[sel], 1.0), 90))
     return out
 
@@ -179,24 +248,48 @@ class SiteLearner:
     def __init__(self, history: History, model_dir: str | Path,
                  config: SiteLearnConfig | None = None) -> None:
         self.db = history
-        self.cfg = config or SiteLearnConfig()
+        self.base_cfg = config or SiteLearnConfig()
+        self.cfg = self.base_cfg
+        self.tuning: dict[str, int] = {}
         self.dir = Path(model_dir) / "site_learning"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.meta_path = self.dir / "meta.json"
-        self.meta: dict[str, Any] = json.loads(self.meta_path.read_text()) if self.meta_path.exists() else {}
+        self.meta: dict[str, Any] = self._read_meta()
         self._models: dict[str, Any] = {}
 
+    def set_tuning(self, steps: dict[str, Any]) -> None:
+        """Apply sensitivity steps decided from technician labels (SMS service)."""
+        clean = {str(k): int(v) for k, v in (steps or {}).items()
+                 if isinstance(v, (int, float)) and int(v) > 0}
+        if clean != self.tuning:
+            logger.info("site_learning_tuning", steps=clean)
+        self.tuning = clean
+        self.cfg = tuned_config(self.base_cfg, clean)
+
     # ── persistence ──
+    def _read_meta(self) -> dict[str, Any]:
+        try:
+            data = json.loads(self.meta_path.read_text())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            # Truncated by a power cut, or a failing SD card. Start again:
+            # the models retrain from the readings still on the box.
+            logger.warning("site_learning_meta_unreadable", path=str(self.meta_path))
+            return {}
+        return data if isinstance(data, dict) else {}
+
     def _save_meta(self) -> None:
-        self.meta_path.write_text(json.dumps(self.meta, indent=2, sort_keys=True))
+        atomic_write(self.meta_path, json.dumps(self.meta, indent=2, sort_keys=True).encode())
 
     def _model_file(self, key: str) -> Path:
         return self.dir / f"{key.replace(':', '__')}.ubj"
 
     def _store(self, key: str, model: Any, info: dict[str, Any]) -> None:
-        model.save_model(str(self._model_file(key)))
+        raw = bytes(model.save_raw("ubj"))
+        atomic_write(self._model_file(key), raw)
         self._models[key] = model
-        self.meta[key] = info
+        self.meta[key] = {**info, "bytes": len(raw)}
         self._save_meta()
 
     def _load(self, key: str) -> Any | None:
@@ -205,10 +298,21 @@ class SiteLearner:
         path = self._model_file(key)
         if not path.exists():
             return None
-        booster = _xgb().Booster()
-        booster.load_model(str(path))
+        try:
+            booster = _xgb().Booster()
+            booster.load_model(str(path))
+        except Exception:
+            logger.warning("site_learning_model_unreadable", key=key)
+            return None
         self._models[key] = booster
         return booster
+
+    def _forget(self, key: str) -> None:
+        """Drop a model whose file is missing or damaged so it is learned again."""
+        for k in [k for k in self.meta if k == key or k.startswith(key + ":")]:
+            self.meta.pop(k)
+            self._models.pop(k, None)
+        self._save_meta()
 
     def reset(self, key_prefix: str) -> None:
         """Forget a baseline, e.g. 'battery:<asset>' after a battery replacement."""
@@ -259,37 +363,77 @@ class SiteLearner:
             found |= set(self._assets_with(m))
         return sorted(found)
 
+    def _uncurtailed(self, asset: str, ts: np.ndarray, days: int) -> np.ndarray:
+        """True for slots where the panels were free to give all they could.
+
+        With the bank full, an off-grid inverter throttles the panels down to
+        the load, so low output then means "nothing to charge", not dust. The
+        state of charge comes from the same asset, or from the site's battery
+        when the inverter does not report one. With no state of charge at all
+        every slot is kept, as before.
+        """
+        soc_ts, soc = self._series(asset, BATTERY_SOC, days)
+        if len(soc_ts) == 0:
+            others = [a for a in self._assets_with(BATTERY_SOC) if a != asset]
+            if others:
+                soc_ts, soc = self._series(others[0], BATTERY_SOC, days)
+        free = np.ones(len(ts), bool)
+        if len(soc_ts) == 0:
+            return free
+        idx = np.clip(np.searchsorted(soc_ts, ts), 0, len(soc_ts) - 1)
+        known = soc_ts[idx] == ts
+        free[known] = soc[idx[known]] < self.cfg.pv_full_soc_pct
+        return free
+
+    def _pv_ratios(self, ts: np.ndarray, pv: np.ndarray, model: Any) -> dict[int, float]:
+        c = self.cfg
+        exp = predict(model, time_features(ts, c.utc_offset_hours)[:, :2]) if len(ts) else np.array([])
+        return pv_daily_peak_ratio(ts, pv, exp, c.utc_offset_hours, c.pv_strong_hours,
+                                   c.pv_min_slots_per_day)
+
     def _pv(self, asset: str, now: float) -> dict[str, Any] | None:
         c = self.cfg
         key = f"pv:{asset}"
         ts, pv = self._pv_series(asset, c.pv_window_days)
         if len(ts) == 0:
             return None
+        free = self._uncurtailed(asset, ts, c.pv_window_days)
+        span_days = self._span_days(ts)
+        last_ts = float(ts[-1])
+        ts, pv = ts[free], pv[free]
+        if len(ts) == 0:
+            return None
         info = self.meta.get(key)
+        if info is not None and self._load(key) is None:  # file lost or damaged: learn again
+            self._forget(key)
+            info = None
         due = info is None or now - info["trained_at"] >= c.pv_retrain_days * DAY_S
-        if due and self._span_days(ts) >= c.pv_min_days:
-            train = ts < (ts[-1] - c.pv_alert_days * DAY_S) if info else np.ones(len(ts), bool)
-            if info and self._load(key) is not None:  # skip days the current model already flagged as weak
-                old = self._load(key)
-                ratios = pv_daily_peak_ratio(ts, pv, predict(old, time_features(ts, c.utc_offset_hours)[:, :2]),
-                                             c.utc_offset_hours)
+        if due and span_days >= c.pv_min_days:
+            train = ts < (last_ts - c.pv_alert_days * DAY_S) if info else np.ones(len(ts), bool)
+            if info:  # skip days the current model already flagged as weak
+                ratios = self._pv_ratios(ts, pv, self._load(key))
                 bad = {d for d, r in ratios.items() if r < 0.85 * info["baseline_ratio"]}
                 train &= ~np.isin(local_day(ts, c.utc_offset_hours), list(bad))
-            X = time_features(ts[train], c.utc_offset_hours)[:, :2]
-            model = fit_quantile(X, pv[train], 0.9)
-            exp = predict(model, time_features(ts[train], c.utc_offset_hours)[:, :2])
-            ratios = pv_daily_peak_ratio(ts[train], pv[train], exp, c.utc_offset_hours)
-            baseline = float(np.median(list(ratios.values()))) if ratios else 1.0
-            self._store(key, model, {"trained_at": now, "rows": int(train.sum()),
-                                     "days": round(self._span_days(ts[train]), 1),
-                                     "baseline_ratio": baseline, "kind": "solar"})
-            info = self.meta[key]
+            if train.sum() >= 100:
+                X = time_features(ts[train], c.utc_offset_hours)[:, :2]
+                started = time.perf_counter()
+                model = fit_quantile(X, pv[train], 0.9)
+                fit_s = time.perf_counter() - started
+                ratios = self._pv_ratios(ts[train], pv[train], model)
+                baseline = float(np.median(list(ratios.values()))) if ratios else 1.0
+                self._store(key, model, {"trained_at": now, "rows": int(train.sum()),
+                                         "days": round(self._span_days(ts[train]), 1),
+                                         "curtailed_pct": round(100 * (1 - float(free.mean()))),
+                                         "baseline_ratio": baseline, "kind": "solar",
+                                         "fit_s": round(fit_s, 3)})
+                info = self.meta[key]
         model = self._load(key)
         if model is None or info is None:
             return None
-        recent = ts >= ts[-1] - c.pv_alert_days * DAY_S
-        exp = predict(model, time_features(ts[recent], c.utc_offset_hours)[:, :2])
-        ratios = pv_daily_peak_ratio(ts[recent], pv[recent], exp, c.utc_offset_hours)
+        recent = ts >= last_ts - c.pv_alert_days * DAY_S
+        ratios = self._pv_ratios(ts[recent], pv[recent], model)
+        # Days with too few free slots (bank full by mid-morning) give no
+        # ratio, so a site that is curtailed all week is simply not judged.
         if len(ratios) < c.pv_alert_days - 1:
             return None
         rel = float(np.median(list(ratios.values()))) / max(info["baseline_ratio"], 1e-6)
@@ -299,16 +443,22 @@ class SiteLearner:
         return None
 
     # ── battery ──
+    def _battery_power(self, asset: str, days: int) -> tuple[np.ndarray, np.ndarray]:
+        """Battery power in watts; from current times voltage if not reported."""
+        p = self._series(asset, BATTERY_P, days)
+        if len(p[0]):
+            return p
+        i = self._series(asset, BATTERY_I, days)
+        v = self._series(asset, BATTERY_V, days)
+        if len(i[0]) == 0 or len(v[0]) == 0:
+            return np.array([]), np.array([])
+        ts_i, (iv, vv) = align(i, v)
+        return ts_i, iv * vv
+
     def _battery_frame(self, asset: str, days: int) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
         v = self._series(asset, BATTERY_V, days)
         soc = self._series(asset, BATTERY_SOC, days)
-        p = self._series(asset, BATTERY_P, days)
-        if len(p[0]) == 0:
-            i = self._series(asset, BATTERY_I, days)
-            if len(i[0]) == 0 or len(v[0]) == 0:
-                return None
-            ts_i, (iv, vv) = align(i, v)
-            p = (ts_i, iv * vv)
+        p = self._battery_power(asset, days)
         if min(len(v[0]), len(soc[0]), len(p[0])) == 0:
             return None
         temp = self._series(asset, BATTERY_T, days)
@@ -332,9 +482,11 @@ class SiteLearner:
             split = ts < ts[0] + (ts[-1] - ts[0]) * 0.8
             if split.sum() < 200 or (~split).sum() < 50:
                 return None
+            started = time.perf_counter()
             holdout_model = fit_regression(X[split], v[split])
             hold_resid = predict(holdout_model, X[~split]) - v[~split]
             model = fit_regression(X, v)
+            fit_s = time.perf_counter() - started
             # Vendors disagree on the sign of battery power, so learn it: the
             # discharge direction is the one that moves state of charge down.
             dsoc = np.diff(X[:, 0])
@@ -353,12 +505,15 @@ class SiteLearner:
                 "load_kw_p95": float(np.percentile(discharge_kw, 95)) if len(discharge_kw) else 0.0,
                 # only judge the battery where the baseline has seen it operate
                 "soc_lo": float(np.percentile(soc_dis, 10)), "soc_hi": float(np.percentile(soc_dis, 90)),
-                "kind": "battery",
+                "kind": "battery", "fit_s": round(fit_s, 3),
             })
             return None
         model = self._load(key)
+        if model is None:  # file lost or damaged: take a new baseline
+            self._forget(key)
+            return None
         frame = self._battery_frame(asset, c.battery_alert_days)
-        if model is None or frame is None:
+        if frame is None:
             return None
         ts, X, v = frame
         kw = info["discharge_sign"] * X[:, 1]
@@ -403,15 +558,20 @@ class SiteLearner:
         if len(ts) == 0:
             return None
         info = self.meta.get(key)
+        if info is not None and any(self._load(f"{key}:{q}") is None for q in ("lo", "mid", "hi")):
+            self._forget(key)
+            info = None
         due = info is None or now - info["trained_at"] >= c.load_retrain_hours * 3600
         if due and self._span_days(ts) >= c.load_min_days:
             train = ts < ts[-1] - 2 * DAY_S
             X = time_features(ts[train], c.utc_offset_hours)
+            started = time.perf_counter()
             for q, alpha in (("lo", 0.1), ("mid", 0.5), ("hi", 0.9)):
                 self._store(f"{key}:{q}", fit_quantile(X, load[train], alpha),
                             {"trained_at": now, "rows": int(train.sum()), "kind": "load", "metric": metric})
             self.meta[key] = {"trained_at": now, "rows": int(train.sum()), "kind": "load",
-                              "days": round(self._span_days(ts[train]), 1), "metric": metric}
+                              "days": round(self._span_days(ts[train]), 1), "metric": metric,
+                              "fit_s": round(time.perf_counter() - started, 3)}
             self._save_meta()
             info = self.meta[key]
         if info is None:
@@ -441,24 +601,117 @@ class SiteLearner:
                                "expected_w": round(float(np.median(mid[low])))}}
         return None
 
+    # ── run-out ──
+    def _net_frame(self, asset: str, days: int) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Slots with both state of charge and battery power: (time, SoC %, kW as reported)."""
+        soc = self._series(asset, BATTERY_SOC, days)
+        p = self._battery_power(asset, days)
+        if min(len(soc[0]), len(p[0])) == 0:
+            return None
+        ts, (ss, pp) = align(soc, p)
+        return ts, ss, pp / 1000.0
+
+    def _runout(self, asset: str, now: float) -> dict[str, Any] | None:
+        """Warn when the bank is likely to reach its cut-off in the next few hours.
+
+        One model per battery: its usual net discharge (load minus solar) by
+        time of day and weekday. No pairing of load, solar and battery assets
+        is needed, because the battery's own power already is the difference.
+        """
+        c = self.cfg
+        key = f"runout:{asset}"
+        info = self.meta.get(key)
+        if info is not None and self._load(key) is None:
+            self._forget(key)
+            info = None
+        due = info is None or now - info["trained_at"] >= c.runout_retrain_hours * 3600
+        frame = self._net_frame(asset, c.runout_window_days if due else 7)
+        if frame is None or len(frame[0]) < 2:
+            return None
+        ts, soc, kw = frame
+        if due and self._span_days(ts) >= c.runout_min_days:
+            step_ok = np.diff(ts) == SLOT_S
+            dsoc = np.diff(soc)[step_ok]
+            if len(dsoc) < 200 or np.std(dsoc) == 0:
+                return None
+            # Vendors disagree on the sign of battery power: discharge is the
+            # direction that moves state of charge down.
+            corr = np.corrcoef(kw[1:][step_ok], dsoc)[0, 1]
+            sign = -1.0 if corr > 0 else 1.0
+            dis = sign * kw
+            # Watt-hours per percent of charge, from every discharging step.
+            mean_kw = ((dis[1:] + dis[:-1]) / 2)[step_ok]
+            out = mean_kw > 0.05
+            swing = float(-dsoc[out].sum())
+            if swing < c.runout_min_soc_swing_pct:
+                return None
+            wh_per_pct = float(mean_kw[out].sum() * 1000 * SLOT_S / 3600) / swing
+            # Leave out slots at the cut-off: there the output is off and the
+            # battery gives nothing, which is not what a normal night looks like.
+            live = soc > c.runout_soc_pct + 2
+            if live.sum() < 200 or wh_per_pct <= 0:
+                return None
+            started = time.perf_counter()
+            model = fit_quantile(time_features(ts[live], c.utc_offset_hours), dis[live], 0.5)
+            self._store(key, model, {
+                "trained_at": now, "rows": int(live.sum()), "days": round(self._span_days(ts), 1),
+                "discharge_sign": sign, "wh_per_soc_pct": round(wh_per_pct, 1),
+                "usable_kwh_estimate": round(wh_per_pct * 100 / 1000, 1),
+                "kind": "runout", "fit_s": round(time.perf_counter() - started, 3)})
+            info = self.meta[key]
+        model = self._load(key)
+        if model is None or info is None:
+            return None
+        if now - ts[-1] > 3 * SLOT_S:  # no fresh reading: do not guess
+            return None
+        soc_now = float(soc[-1])
+        if soc_now <= c.runout_soc_pct:
+            return None  # already there; the low-battery rules speak for it
+        week = ts >= now - 7 * DAY_S
+        empty_days = np.unique(local_day(ts[week], c.utc_offset_hours)[soc[week] <= c.runout_soc_pct + 2])
+        if len(empty_days) >= c.runout_routine_days:
+            return None
+        n = int(c.runout_horizon_hours * 3600 / SLOT_S)
+        future = (np.floor(now / SLOT_S) + 1 + np.arange(n)) * SLOT_S
+        pred = predict(model, time_features(future, c.utc_offset_hours))
+        level = np.minimum(100.0, soc_now - np.cumsum(pred) * 1000 * SLOT_S / 3600 / info["wh_per_soc_pct"])
+        # (the cap at 100% only matters once the sun is back, after any run-out)
+        below = np.nonzero(level <= c.runout_soc_pct)[0]
+        if len(below) == 0:
+            return None
+        k = int(below[0])
+        trough_end = k + int(np.argmax(pred[k:] <= 0)) if (pred[k:] <= 0).any() else n - 1
+        if float(level[k:trough_end + 1].min()) > c.runout_soc_pct - c.runout_margin_pct:
+            return None
+        hours = (k + 1) * SLOT_S / 3600
+        if hours > c.runout_alert_hours:
+            return None
+        at = time.strftime("%H:%M", time.gmtime(future[k] + c.utc_offset_hours * 3600))
+        return {"code": "battery_runout", "asset_id": asset, "severity": "warning",
+                "values": {"at": at, "hours": round(hours, 1), "soc": round(soc_now)}}
+
     # ── entry point ──
+    def _each(self, kind: str, assets: list[str], check: Any, now: float,
+              findings: list[dict[str, Any]]) -> None:
+        for asset in assets:
+            try:
+                f = check(asset, now)
+            except Exception:
+                # One odd asset must not silence the findings for the others.
+                logger.exception("site_learning_check_failed", kind=kind, asset=asset)
+                continue
+            if f:
+                findings.append(f)
+
     def step(self, now: float | None = None) -> list[dict[str, Any]]:
         """Train what is due, then return current findings (warnings)."""
         now = time.time() if now is None else now
         findings: list[dict[str, Any]] = []
-        for asset in self._pv_assets():
-            f = self._pv(asset, now)
-            if f:
-                findings.append(f)
-        for asset in self._assets_with(BATTERY_V):
-            f = self._battery(asset, now)
-            if f:
-                findings.append(f)
+        self._each("solar", self._pv_assets(), self._pv, now, findings)
+        self._each("battery", self._assets_with(BATTERY_V), self._battery, now, findings)
         load_assets: set[str] = set()
         for m in LOAD_METRICS:
             load_assets |= set(self._assets_with(m))
-        for asset in sorted(load_assets):
-            f = self._load_check(asset, now)
-            if f:
-                findings.append(f)
+        self._each("load", sorted(load_assets), self._load_check, now, findings)
+        self._each("runout", self._assets_with(BATTERY_SOC), self._runout, now, findings)
         return findings

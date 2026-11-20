@@ -1,4 +1,4 @@
-"""Okra Solar mesh-grid adapter (Doc 15 §7.5, F-HW-08).
+"""Okra Solar mesh-grid adapter.
 
 Integrates with Okra's Harvest cloud API for mesh-grid topology
 monitoring and per-node metrics. Uses httpx with transport-level

@@ -1,4 +1,4 @@
-"""Tests for OkraHarvestAdapter (Doc 15 §7.5, F-HW-08)."""
+"""Tests for OkraHarvestAdapter."""
 
 from __future__ import annotations
 

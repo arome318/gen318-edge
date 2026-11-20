@@ -1,4 +1,4 @@
-"""Adapter registry — maps config type strings to adapter classes (Doc 15).
+"""Adapter registry — maps config type strings to adapter classes.
 
 Pattern mirrors backend/app/adapters/registry.py for consistency.
 """

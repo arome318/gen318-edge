@@ -211,6 +211,31 @@ class SmsStore:
         keys = ("ref", "code", "severity", "asset_id", "raised_at", "cleared_at", "label")
         return [dict(zip(keys, r, strict=True)) for r in rows]
 
+    def delivery_counts(self, start: float, end: float) -> dict[str, int]:
+        """SMS the box sent in [start, end), counted by kind (alert, reply, cleared, ...)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT kind, COUNT(*) FROM deliveries WHERE sent_at>=? AND sent_at<? AND ok=1 "
+                "GROUP BY kind ORDER BY kind", (start, end),
+            ).fetchall()
+        return {kind: int(n) for kind, n in rows}
+
+    def fault_rows(self) -> list[dict[str, Any]]:
+        """Every alert with its latest technician label (if any) and how long the label took."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT a.ref, a.code, a.severity, a.raised_at, a.cleared_at, a.values_json, "
+                "(SELECT l.label FROM labels l WHERE l.ref=a.ref ORDER BY l.received_at DESC, l.id DESC LIMIT 1), "
+                "(SELECT l.received_at FROM labels l WHERE l.ref=a.ref ORDER BY l.received_at DESC, l.id DESC LIMIT 1) "
+                "FROM alerts a ORDER BY a.raised_at"
+            ).fetchall()
+        keys = ("ref", "code", "severity", "raised_at", "cleared_at", "values", "label", "labelled_at")
+        return [dict(zip(keys, (*r[:5], json.loads(r[5]), r[6], r[7]), strict=True)) for r in rows]
+
+    def site_pseudonym(self, device_id: str) -> str:
+        """A stable made-up site id: the same box always gets the same one, and it cannot be reversed."""
+        return hashlib.sha256(f"{self._salt}:site:{device_id}".encode()).hexdigest()[:12]
+
     def recent_labels(self, limit: int = 60) -> list[dict[str, Any]]:
         """Technician replies (1, 2 or 3) with the time each arrived, newest first."""
         with self._lock:

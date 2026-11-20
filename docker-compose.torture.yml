@@ -1,0 +1,57 @@
+# Only for tools/torture_test.py. Adds a pretend inverter (Modbus TCP) to the
+# stack and points the box at test configs, so the real containers have
+# something to read while they are being killed.
+#
+#   python tools/torture_test.py --minutes 60
+#
+# Runs as its own compose project, so its volumes are separate from a real
+# box's and are removed when the test ends.
+services:
+  emulator:
+    build:
+      context: ./edge
+      dockerfile: collector/Dockerfile.arm64
+    container_name: gen318-emulator
+    command: ["python", "/tools/felicity_emulator.py", "tcp:0.0.0.0:5020"]
+    volumes:
+      - ./tools:/tools:ro
+    restart: always
+    mem_limit: 96m
+
+  # Kills the other containers' processes from outside them, the way a crash
+  # or a power cut does. ("docker kill" would not do: Docker treats it as a
+  # deliberate stop and switches its own restart policy off.)
+  killer:
+    build:
+      context: ./edge
+      dockerfile: collector/Dockerfile.arm64
+    container_name: gen318-killer
+    command: ["sleep", "infinity"]
+    pid: host
+    privileged: true
+    restart: always
+    mem_limit: 32m
+
+  collector:
+    volumes:
+      - collector_data:/data
+      - ./bench-data/torture/adapters.yaml:/config/adapters.yaml:ro
+
+  inference:
+    environment:
+      - SITELEARN_INTERVAL_SECONDS=60
+
+  sms:
+    environment:
+      - SMS_TICK_SECONDS=5
+    volumes:
+      - sms_data:/data/sms
+      - ./bench-data/torture/sms.yaml:/config/sms.yaml:ro
+
+  api:
+    volumes:
+      - collector_data:/data
+      - inference_models:/models:ro
+      - sms_data:/sms:ro
+      - edge_metrics:/metrics:ro
+      - ./bench-data/torture/sms.yaml:/config/sms.yaml:ro

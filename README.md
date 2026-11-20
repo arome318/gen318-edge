@@ -54,6 +54,16 @@ diesel bill.
   to anyone on the site network; the two actions (reconnect an adapter,
   run diagnostics) need the token you set in `LOCAL_API_TOKEN`. The
   internal message broker is not reachable from outside the box.
+- **Writes a monthly operating record.** `tools/operating_record.py` makes
+  a file per month with the share of time power was available, energy
+  delivered, alerts and what technicians said about them, for lenders and
+  programmes that need evidence. Time the box did not see is reported as
+  unknown, not as power on. The operator decides who gets the file. See
+  `docs/OPERATING_RECORD.md`.
+- **Can contribute to an open fault dataset.** `tools/export_fault_dataset.py`
+  exports alerts and technician labels with no phone numbers, names, site
+  name or dates. The tool is ready; there are no field labels yet. See
+  `docs/FAULT_DATASET.md`.
 - **Accounts for its own energy.** The box keeps a daily record of the
   watts it draws and its share of the site's consumption (local page and
   `/energy`), with the size of its models and the seconds they took to
@@ -113,7 +123,7 @@ The first field pilot is under way in Nigeria.
 | `edge/api/` | Local page and JSON API on port 8080 |
 | `edge/sync/` | Optional store-and-forward sync to your own server |
 | `edge/watchdog/` | Container health, tamper switch |
-| `tools/` | Demo, bench runner, SMS injector, energy measurement |
+| `tools/` | Demo, bench runner, SMS injector, energy measurement, operating record and dataset exports, power-cut torture test |
 
 ## Tests
 

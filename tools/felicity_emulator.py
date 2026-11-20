@@ -3,7 +3,12 @@
     socat -d -d pty,raw,echo=0,link=/tmp/inv pty,raw,echo=0,link=/tmp/box &
     python tools/felicity_emulator.py /tmp/inv
 
-Then point the box's Felicity adapter at /tmp/box. Register addresses and
+Then point the box's Felicity adapter at /tmp/box. For a box running in
+Docker (which cannot reach a serial port on a Mac) it can serve Modbus TCP
+instead:
+
+    python tools/felicity_emulator.py tcp:0.0.0.0:5020
+ Register addresses and
 scales follow edge/collector/adapters/vendor_maps/felicity_hybrid.yaml; the
 values are made up. It proves the box's software path end to end, NOT that
 the map matches a real inverter (only a real unit can show that).
@@ -16,7 +21,7 @@ import math
 import sys
 import time
 
-from pymodbus.server import StartAsyncSerialServer
+from pymodbus.server import StartAsyncSerialServer, StartAsyncTcpServer
 from pymodbus.simulator import DataType, SimData, SimDevice
 
 BASE = 4355  # first register the map reads (0x1103)
@@ -60,6 +65,11 @@ async def main(port: str) -> None:
         simdata=[SimData(address=BASE, count=SIZE, values=0, datatype=DataType.REGISTERS)],
         action=action,
     )
+    if port.startswith("tcp:"):
+        host, _, tcp_port = port[4:].rpartition(":")
+        print(f"Felicity emulator on Modbus TCP {host}:{tcp_port} (unit 1)", flush=True)
+        await StartAsyncTcpServer(context=device, address=(host or "0.0.0.0", int(tcp_port)))
+        return
     print(f"Felicity emulator on {port} (9600 8N1, unit 1)", flush=True)
     await StartAsyncSerialServer(context=device, port=port, baudrate=9600)
 

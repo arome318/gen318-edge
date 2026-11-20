@@ -273,6 +273,32 @@ class EdgeDatabase:
         keep = np.isfinite(arr[:, 1])
         return arr[keep, 0] / 1000.0, arr[keep, 1]
 
+    def series_between(self, start_ms: int, end_ms: int, metrics: tuple[str, ...]
+                       ) -> dict[tuple[str, str], tuple[Any, Any]]:
+        """Good-quality readings of the given metrics in [start, end), per (asset, metric).
+
+        For reports over a fixed period (a month's operating record), unlike
+        ``get_series`` which looks back from now. Arrays are (seconds, values).
+        """
+        import numpy as np
+
+        if not metrics:
+            return {}
+        marks = ",".join("?" * len(metrics))
+        with self._lock:
+            assert self._conn is not None
+            rows = self._conn.execute(
+                f"SELECT asset_id, metric_name, timestamp, value FROM measurements "
+                f"WHERE timestamp >= ? AND timestamp < ? AND quality <= 2 AND metric_name IN ({marks}) "
+                f"ORDER BY timestamp ASC",
+                (start_ms, end_ms, *metrics),
+            ).fetchall()
+        grouped: dict[tuple[str, str], list[tuple[float, float]]] = {}
+        for asset, metric, ts, value in rows:
+            if value is not None and np.isfinite(value):
+                grouped.setdefault((asset, metric), []).append((ts / 1000.0, float(value)))
+        return {k: (np.array([t for t, _ in v]), np.array([x for _, x in v])) for k, v in grouped.items()}
+
     def get_readings_history(
         self, asset_id: str, metric: str, hours: int = 24
     ) -> list[dict[str, Any]]:

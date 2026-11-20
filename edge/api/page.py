@@ -294,7 +294,7 @@ A reply of 1 (real), or RESET TUNING, puts it back. Critical alerts never change
 <section class="card"><div class="head"><h2>What this box itself uses</h2></div>
 <div id="energy" data-live>{_energy(s["energy"])}</div></section>
 </div>
-<section class="card"><details open><summary><h2>Latest readings</h2></summary>
+<section class="card"><details><summary><h2>Latest readings</h2></summary>
 <div id="readings" data-live>{_readings(s["readings"])}</div></details></section>
 <p class="foot">Works offline. This page updates itself every {int(s["refresh"])} seconds.</p>"""
 

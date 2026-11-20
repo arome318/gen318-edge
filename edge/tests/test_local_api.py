@@ -227,6 +227,9 @@ class TestLocalPage:
         assert 'class="chip ok"' in page and "Comms OK" in page and 'class="kpis"' in page
         for block in ("kpis", "comms", "feed", "alerts", "learned", "tuning", "energy", "readings"):
             assert f'id="{block}" data-live' in page
+        # the raw readings table is there but folded away, so the SMS feed keeps the eye
+        assert "<details><summary><h2>Latest readings</h2></summary>" in page and "<details open" not in page
+        assert "<td>asset-1</td>" in page          # asset ids are printed as stored
 
     @pytest.mark.asyncio
     async def test_page_needs_nothing_from_the_internet(self, api_client: AsyncClient) -> None:
@@ -252,6 +255,7 @@ class TestLocalPage:
             assert resp.status_code == 200 and kind in resp.headers["content-type"], path
         # every font the stylesheet names is bundled, with its licence
         css = (static / "page.css").read_text()
+        assert ".readings td:first-child::first-letter { text-transform: none; }" in css   # no "Inv-1"
         fonts = re.findall(r'url\("fonts/([^"]+)"\)', css)
         assert len(fonts) == 7
         for name in fonts:

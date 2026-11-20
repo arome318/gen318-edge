@@ -190,6 +190,8 @@ th { font: 500 10px/14px var(--mono); letter-spacing: 0.14em; text-transform: up
 td { padding: 7px 8px 7px 0; border-top: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
 td.n, th.n { text-align: right; padding-right: 0; white-space: nowrap; }
 td:first-child::first-letter { text-transform: uppercase; }
+/* asset ids and metric names are shown exactly as the box stores them */
+.readings td:first-child::first-letter { text-transform: none; }
 .stat { font: 500 15px/22px var(--mono); font-variant-numeric: tabular-nums; margin-bottom: 6px; }
 
 details > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; min-height: 28px; }

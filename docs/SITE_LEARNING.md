@@ -135,3 +135,30 @@ design, to keep false alarms down; 20% dust is caught less often than
 before the curtailment rule (2 of 10 sites, was 3 of 10), because slots
 with a full bank no longer count. Field validation starts with the first
 pilot.
+
+## Experiment: thresholds set to a stated false-alarm rate (not in the box)
+
+The unusual-load warning uses hand-set numbers. `tools/calibration_eval.py`
+asks what happens if the box instead measures how far its own site strays
+from the learned band on normal days, and sets the threshold where only a
+chosen share of normal 2-hour windows would cross it (split conformal
+calibration). Nothing in the box uses this yet. Ten simulated sites, days
+30 to 60, 20 November 2026:
+
+| Threshold | Normal windows over it | False alarms per 30 days | 400 W night load caught | 800 W caught |
+|---|---|---|---|---|
+| Set for 1% of windows | 1.07% | 9.3 | 10/10, in 1.0 h | 10/10, in 1.0 h |
+| Set for 0.1% of windows | 0.18% | 1.8 | 10/10, in 1.2 h | 10/10, in 1.2 h |
+| Today's fixed rule | 0.00% | 0 | 0/10 | 10/10, in 1.2 h |
+
+What it shows: the method hits the rate it is asked for, and it catches
+the 400 W load the fixed rule misses by design. What it costs: windows
+overlap, so even "0.1% of windows" is about two false SMS a month, where
+the fixed rule sent none. That trade is the operator's to make, which is
+the point of exposing it as a number.
+
+Why it is not in the box: the simulator's load noise is the same kind
+every day, which is the condition under which the method's promise holds.
+A real village has market days, festivals and seasons. It needs a field
+trial, alongside the fixed rule, before it sends anyone an SMS.
+

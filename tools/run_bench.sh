@@ -31,7 +31,8 @@ if ! nc -z 127.0.0.1 1883 2>/dev/null; then
   mosquitto -p 1883 & pids+=($!)
   sleep 1
 fi
-$PY -m collector.main & pids+=($!)
+# COLLECTOR_ENTRY lets tools/demo_video.sh start its own wrapper around the collector.
+$PY ${COLLECTOR_ENTRY:--m collector.main} & pids+=($!)
 $PY -m sms.main & pids+=($!)
 $PY -m inference.main & pids+=($!)
 $PY -m uvicorn api.main:app --host 0.0.0.0 --port 8080 & pids+=($!)

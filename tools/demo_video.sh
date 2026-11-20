@@ -51,7 +51,7 @@ case "${1:-start}" in
     DEMO=$(demo_dir)
     [ -f "$DEMO/emulator.pid" ] || fail "the inverter is already unplugged."
     stop_emulator "$DEMO"
-    say "Inverter unplugged. In about 30 seconds the box texts the technician:"
+    say "Inverter unplugged. In about 35 seconds the box texts the technician:"
     say "  \"Box cannot read equipment ...\"   Watch the SMS table on $URL"
     exit 0 ;;
   plug)
@@ -124,7 +124,6 @@ adapters:
       protocol: rtu
       port: $DEMO/box
       baudrate: 9600
-      poll_interval_seconds: 5      # fast, so the video does not wait
       asset_mappings:
         inverter: "$ASSET"
         battery: "$ASSET"
@@ -132,6 +131,14 @@ adapters:
         grid_connection: "$ASSET"
         load: "$ASSET"
 YAML
+
+# The Felicity map polls every 30 seconds, and a site config cannot change
+# that. For the camera, the demo reads a copy of the maps with 5 seconds
+# instead (see tools/demo_collector.py). Registers and scales are untouched.
+cp -R "$REPO/edge/collector/adapters/vendor_maps" "$DEMO/vendor_maps"
+sed -i '' 's/poll_interval_seconds: 30/poll_interval_seconds: 5/' "$DEMO/vendor_maps/felicity_hybrid.yaml"
+grep -q 'poll_interval_seconds: 5' "$DEMO/vendor_maps/felicity_hybrid.yaml" \
+  || fail "could not shorten the poll interval in the demo's copy of the Felicity map."
 
 cat > "$DEMO/sms.yaml" <<YAML
 site_name: Demo Mini-grid
@@ -177,6 +184,7 @@ SQLITE_PATH="$DEMO/gen318.db" MODEL_PATH="$DEMO/models" \
 ADAPTER_CONFIG_PATH="$DEMO/adapters.yaml" SMS_CONFIG_PATH="$DEMO/sms.yaml" \
 SMS_DB_PATH="$DEMO/sms/sms.db" SMS_TICK_SECONDS=3 PAGE_REFRESH_SECONDS=3 \
 DEVICE_ID="demo-box" PY="$PY" \
+DEMO_VENDOR_MAPS_DIR="$DEMO/vendor_maps" COLLECTOR_ENTRY="$REPO/tools/demo_collector.py" \
   "$REPO/tools/run_bench.sh" > "$DEMO/box.log" 2>&1 &
 BOX_PID=$!
 
@@ -197,9 +205,10 @@ cat <<TEXT
 ==================================================================
 
  Give it about 15 seconds for the first readings, then film.
+ Readings on the page change every 5 seconds (a real site: 30).
  Run these in a SECOND terminal window, from this folder:
 
- 1. "Unplug" the inverter (the comms-lost SMS appears in ~30 s):
+ 1. "Unplug" the inverter (the comms-lost SMS appears in ~35 s):
 
       tools/demo_video.sh unplug
 

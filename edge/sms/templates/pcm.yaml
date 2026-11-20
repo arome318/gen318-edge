@@ -1,0 +1,64 @@
+# Nigerian Pidgin SMS templates. DRAFT: to be reviewed and corrected by
+# the technician advisory group before field use. ASCII-only, short.
+language_name: Pidgin
+faults:
+  battery_critical: "Battery don almost finish ({soc}%). Light go soon off. Reduce load or on gen."
+  battery_low: "Battery don low ({soc}%). Light fit go off tonight. Check load and charging."
+  battery_hot: "Battery too hot ({temp}C). Check air and charging now now."
+  cell_imbalance: "Battery cells no balance ({spread_mv}mV). Check BMS and cells."
+  inverter_fault: "Inverter get fault (code {error_code}). Look inverter screen, reset am if e safe."
+  inverter_hot: "Inverter too hot ({temp}C). Check fan, dust and load."
+  overload: "Load don pass ({load_pct}% of inverter). Reduce load or check new connection."
+  power_off: "Light don off (output {voltage}V). Check inverter and breaker."
+  diesel_waste: "Gen dey run but battery still get {soc}%. Check setting or fuel."
+  comms_lost: "Box no fit read equipment for {minutes} min. Check cable and box power."
+  box_alert: "Box alert: {detail}. Check the box."
+  pv_underperform: "Solar panel dey give only {pct}% of im normal best for {days} days. Check dust, shade or string wey die."
+  battery_degrading: "Battery voltage dey fall {drop_pct}% pass normal when load heavy. Check terminal, cable and cells."
+  load_high: "Load too high: {actual_w}W, normal na about {expected_w}W. Check illegal connection or feeder fault."
+  load_low: "Load too low: {actual_w}W, normal na about {expected_w}W. Check feeder breaker."
+names:
+  battery_critical: battery wey almost finish
+  battery_low: battery wey low
+  battery_hot: battery heat
+  cell_imbalance: battery cells
+  inverter_fault: inverter fault
+  inverter_hot: inverter heat
+  overload: load wey pass
+  power_off: light don off
+  diesel_waste: gen use
+  comms_lost: box reading equipment
+  box_alert: box alert
+  pv_underperform: solar wey no dey give well
+  battery_degrading: battery wey dey fall under load
+  load_high: load wey too high
+  load_low: load wey too low
+recovered:
+  battery_critical: battery don comot for danger level
+  battery_low: battery don pass low level
+  battery_hot: battery heat don normal
+  cell_imbalance: battery cells don balance
+  inverter_fault: inverter fault don clear
+  inverter_hot: inverter heat don normal
+  overload: load don normal
+  power_off: light don come back
+  diesel_waste: gen use don normal
+  comms_lost: box don dey read equipment again
+  box_alert: box alert don clear
+  pv_underperform: solar don dey give well again
+  battery_degrading: battery voltage don normal
+  load_high: load don normal
+  load_low: load don normal
+technician_suffix: " Reply 1=true 2=e no true 3=other #{ref}"
+cleared: "{site}: E don correct: {what}."
+status_on: "{site}: Light dey.{details}"
+status_off: "{site}: Light no dey since {since}. Wetin cause am: {cause}. We don tell technician."
+status_unknown: "{site}: Box never get new data."
+status_battery: " Battery {soc}%."
+status_solar: " Solar {solar_kw}kW."
+help: "Send POWER to know if light dey. Technician: reply 1, 2 or 3 for alert. Send LANG EN or LANG PCM to change language."
+label_ok: "Thank you. Alert #{ref} na: {label}."
+label_none: "No recent alert to mark."
+lang_ok: "Language don change to Pidgin."
+labels: {"1": "true", "2": "false alarm", "3": "other cause"}
+summary: "{site} today: light dey {uptime}% of the time, {alerts} alerts, lowest battery {min_soc}."

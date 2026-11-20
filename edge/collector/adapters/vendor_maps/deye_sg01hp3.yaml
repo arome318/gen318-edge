@@ -1,0 +1,61 @@
+# Deye SUN-30/50K-SG01HP3 — three-phase HIGH-VOLTAGE hybrid (larger C&I).
+#
+# Inherits the LV map and overrides what the HV firmware scales differently.
+# Inheritance is an explicit `extends:` resolved by the loader (plan decision
+# 5): a YAML anchor cannot cross files, so the spec's "share the LV block via
+# a YAML anchor" is implemented this way instead.
+#
+# SOURCES
+#   A = kellerza/sunsynk three_phase_hv.py
+#       @ 0cd3dc58576ab732c4b87200f5e5f9c5d0428dbc  (Apache-2.0)
+#   B = kbialek/deye-inverter-mqtt deye_sensors_deye_sg01hp3.py
+#       @ 3b1d265a185c15332025336647c4e74eb39d68b8  (Apache-2.0)
+#   Read 18 September 2026.
+#
+# HP3 CARRIES AN EXTRA CAVEAT beyond the usual community one: kellerza
+# discussion #558 (October 2025, still unanswered) reports wrong battery
+# voltage and wrong PV readings on some HP3 units. The scaling below is what
+# both sources state. If a commissioning sweep disagrees with the inverter's
+# own display, believe the display and stop — do not adjust a scale to make
+# the number look right.
+
+extends: deye_sg04lp3
+
+vendor: deye
+model_family: SG01HP3
+source: >-
+  kellerza/sunsynk three_phase_hv.py @0cd3dc58;
+  kbialek/deye-inverter-mqtt deye_sensors_deye_sg01hp3.py @3b1d265a; read 2026-09-18
+verification: community
+notes: >-
+  HV variant. Battery voltage, battery power and PV power are scaled
+  differently from LV, and an unanswered upstream report says some units
+  disagree even with these. Four MPPTs instead of two.
+
+assets: [inverter, battery, solar_array, grid_connection]
+optional_assets: [load, diesel_genset]
+
+groups:
+  - name: power
+    registers:
+      # ── HV scaling overrides (same addresses, different scales) ──
+      - {id: bat_v, metric: battery.voltage_v, address: 587, type: uint16, scale: 0.1, asset: battery,   # src: A three_phase_hv.py (HV: 0.1, ten times coarser than LV)
+         notes: "UNVERIFIED — bench required; discussion #558 reports this wrong on some units"}
+      - {id: bat_w, metric: battery.power_w, address: 590, type: int16, scale: 10, asset: battery,   # src: A three_phase_hv.py (HV: x10)
+         notes: "UNVERIFIED — bench required: HV multiplies by 10, and the sign
+                 DIRECTION is unconfirmed on any unit"}
+
+      # PV power is x10 AND unsigned on HV, against LV's x1 signed.
+      - {id: pv1_w, metric: solar.mppt1_power_w, address: 672, type: uint16, scale: 10, asset: solar_array}   # src: A three_phase_hv.py
+      - {id: pv2_w, metric: solar.mppt2_power_w, address: 673, type: uint16, scale: 10, asset: solar_array}   # src: A three_phase_hv.py
+      - {id: pv3_w, metric: solar.mppt3_power_w, address: 674, type: uint16, scale: 10, asset: solar_array}   # src: A three_phase_hv.py
+      - {id: pv4_w, metric: solar.mppt4_power_w, address: 675, type: uint16, scale: 10, asset: solar_array}   # src: A three_phase_hv.py
+      - {id: pv_w, metric: solar.pv_power_w, derived: sum, of: [pv1_w, pv2_w, pv3_w, pv4_w], asset: solar_array}
+      # Four strings now, and still all-or-nothing: a partial sum is a plant
+      # power figure that is quietly short by a string.
+
+      # ── HV BMS block: 0.1 scales, plus registers LV does not have ──
+      - {id: bms_charge_v, metric: battery.charge_voltage_v, address: 210, type: uint16, scale: 0.1, asset: battery}   # src: A three_phase_hv.py:22 (HV override)
+      - {id: bat_soh, metric: battery.soh_pct, address: 224, type: uint16, asset: battery,   # src: A three_phase_hv.py (HV only)
+         min: 0, max: 100,
+         notes: "UNVERIFIED — bench required; HV-only, source A only"}

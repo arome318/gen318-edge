@@ -1,0 +1,40 @@
+# Fronius GEN24 / Symo Hybrid / SnapINverter — SunSpec TCP preset.
+#
+# SOURCES: Fronius's own manuals for the meter unit ids and the float vs
+# int+SF choice (both quoted in the ledger). SunSpec model definitions:
+# github.com/sunspec/models @ 90b4a331 (Apache-2.0).
+# Read 18 September 2026. Full ledger: docs/vendor-integrations/SOURCES.md.
+
+kind: sunspec_preset
+vendor: fronius
+model_family: GEN24 / Symo Hybrid / SnapINverter
+source: >-
+  Fronius GEN24 Modbus TCP/RTU guide and Datamanager documentation (meter unit
+  200 vs 240, float vs int+SF selection); read 2026-09-18
+verification: community
+adapter: sunspec_modbus
+
+connection:
+  protocol: tcp
+  port: 502
+  unit_id: 1
+  base_addresses: [40000]
+
+meter:
+  # The meter is a SEPARATE unit id and is configured as its own adapter
+  # instance, because it is a different asset at a different address.
+  gen24_unit_id: 200
+  datamanager_unit_id: 240
+
+notes: >-
+  Enable "Slave as Modbus TCP". The installer chooses the model type at
+  commissioning: "float" presents models 111-113/211-213 and "int+SF" presents
+  101-103/201-203. The adapter reads whichever the model chain actually
+  contains, so the choice does not need to be recorded here — but it does need
+  to be recorded in the validation record, because it changes which offsets
+  were exercised. Model 124 appears on GEN24 hybrids. Leave "inverter control
+  via Modbus" OFF: this integration never writes.
+
+exclusions: >-
+  The Fronius Solar API (local JSON) is not used. SunSpec is one code path for
+  three brands; adding a second protocol for one of them buys nothing here.

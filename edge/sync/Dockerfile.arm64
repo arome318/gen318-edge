@@ -1,0 +1,28 @@
+FROM python:3.12-slim-bookworm
+
+# Platform: linux/arm64
+LABEL maintainer="Gen318 <eng@gen318.io>"
+LABEL description="Gen318 Edge Sync — 4-tier priority cloud sync with cert pinning"
+
+WORKDIR /app
+
+# Install system dependencies for sqlcipher and SSH
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libsqlcipher-dev \
+        openssh-client \
+        modemmanager && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy common modules and service code
+COPY common/ /app/common/
+COPY sync/ /app/sync/
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+CMD ["python", "-m", "sync.main"]

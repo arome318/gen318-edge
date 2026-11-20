@@ -1,0 +1,39 @@
+# Gen318 Edge SMS settings. Copy to config/sms.yaml and edit.
+site_name: Kuje Mini-grid          # shown at the start of every SMS (keep it short)
+default_lang: en                   # en (English) or pcm (Nigerian Pidgin)
+utc_offset_hours: 1                # Nigeria (WAT)
+
+technicians:                       # get every alert; can label faults by replying 1, 2 or 3
+  - {name: Musa, phone: "0803 000 0001", lang: pcm}
+
+community:                         # get power-off and power-back notices only
+  - {name: Village contact, phone: "0803 000 0002", lang: pcm}
+
+public_status: true                # anyone can text POWER to the box's SIM for site status
+status_per_hour: 3                 # replies per phone per hour (each reply costs airtime)
+notify_community_on: [power_off]
+quiet_hours: [22, 6]               # warnings wait until morning; critical alerts never wait
+daily_summary_hour: 19             # set to null to switch off
+hold_s: 120                        # a fault must last this long before an SMS goes out
+realert_s: 21600                   # repeat a fault still active after 6 hours
+
+rated_power_w:                     # inverter rating per asset id (the UUID in adapters.yaml)
+  7f3c2a10-0000-4000-8000-000000000001: 5000
+
+thresholds:                        # starting points; agree them with the site installer
+  soc_warning_pct: 20
+  soc_critical_pct: 10
+  battery_temp_c: 45
+  cell_spread_v: 0.15
+  inverter_temp_c: 70
+  overload_ratio: 0.9
+  outage_voltage_v: 150
+  genset_soc_pct: 60
+  comms_lost_s: 600
+
+backend:
+  type: dry_run                    # dry_run writes to /data/sms/outbox.jsonl (no SIM needed)
+  directory: /data/sms
+  # type: at_modem                 # real SMS through a GSM/LTE modem (SIM800, SIM7600, EC25)
+  # port: /dev/ttyUSB2
+  # baudrate: 115200

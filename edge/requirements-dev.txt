@@ -1,0 +1,47 @@
+# Gen318 Edge — test dependencies
+#
+#   pip install -r requirements-dev.txt && pytest tests/
+#
+# Deliberately NOT `-r requirements.txt`: that pulls two deps the test
+# suite never exercises and that make CI slow or fragile —
+#   sqlcipher3  needs the libsqlcipher-dev system package; EdgeDatabase
+#               falls back to stdlib sqlite3 when no encryption key is
+#               set, which is how the tests run.
+#   xgboost     installed below as the small CPU-only build (xgboost-cpu),
+#               because the site-learning tests train real models.
+# Runtime pins below mirror requirements.txt — keep them in step.
+
+# Web framework + client (local API tests)
+fastapi==0.115.0
+uvicorn[standard]==0.34.0  # api/main.py imports it at module scope
+httpx==0.28.0
+cryptography>=44.0.0,<47.0.0
+
+# MQTT (adapters, inter-container messaging)
+paho-mqtt==2.1.0
+aiomqtt>=2.0.0
+
+# Field protocol adapters
+pymodbus>=3.6.0,<4
+# pymodbus 3.x makes the serial backend an OPTIONAL extra, and every
+# Modbus RTU vendor map (Deye, DSE, Solis, ComAp) needs it: without
+# pyserial AsyncModbusSerialClient raises at construction. Also the
+# transport for the Voltronic protocol adapter.
+pyserial>=3.5
+python-can>=4.3.0
+
+# Watchdog (system metrics + container control)
+psutil==6.1.0
+docker==7.1.0
+
+pyyaml==6.0.2
+structlog==24.4.0
+numpy>=1.26.0
+
+# On-site learning tests train small models
+xgboost-cpu==3.2.0
+
+# Test tooling
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
+pytest-timeout>=2.3.0

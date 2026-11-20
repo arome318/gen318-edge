@@ -1,0 +1,43 @@
+# Gen318 Edge Node — Python Dependencies
+# Shared across all edge containers (collector, inference, sync, api, watchdog)
+# Target: linux/arm64 (RPi 5 / RPi 4)
+
+# Web framework (local API on :8080)
+fastapi==0.115.0
+uvicorn[standard]==0.34.0
+
+# HTTP client (sync engine + model updates)
+httpx==0.28.0
+cryptography>=44.0.0,<47.0.0
+
+# MQTT client (inter-container messaging)
+paho-mqtt==2.1.0
+
+# Encrypted local database (AES-256-CBC)
+sqlcipher3==0.5.3
+
+# ML inference
+xgboost-cpu==3.2.0  # CPU-only build: no CUDA/NCCL downloads on a Pi
+numpy>=1.26.0
+
+# System monitoring
+psutil==6.1.0
+
+# Docker SDK (watchdog container management)
+docker==7.1.0
+
+# Configuration
+pyyaml==6.0.2
+
+# Structured logging
+structlog==24.4.0
+
+# Hardware adapters (Doc 15)
+aiomqtt>=2.0.0
+pymodbus>=3.6.0,<4
+# pymodbus 3.x makes the serial backend an OPTIONAL extra, and every
+# Modbus RTU vendor map (Deye, DSE, Solis, ComAp) needs it: without
+# pyserial AsyncModbusSerialClient raises at construction. Also the
+# transport for the Voltronic protocol adapter.
+pyserial>=3.5
+python-can>=4.3.0

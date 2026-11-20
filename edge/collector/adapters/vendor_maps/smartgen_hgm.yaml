@@ -1,0 +1,231 @@
+# SmartGen HGM genset controller — the RS485 families, Modbus RTU.
+#
+# SmartGen is the volume genset controller in West Africa, the way Deep Sea
+# is in Europe. This map covers the two families with a published SmartGen
+# protocol document and a shared internal register layout:
+#
+#   HGM7220N and HGM7220S      — protocol doc v1.2, 2025-05-19
+#   HGM9510, HGM9520, HGM9530  — protocol doc v1.4, 2024-11-08
+#
+# Every address below was checked in both documents and matches.
+#
+# ── READ THIS BEFORE QUOTING A MODEL NUMBER ─────────────────────────────
+#
+# HGM6110N and HGM6120N HAVE NO RS485 PORT. They cannot speak Modbus at
+# all, and no map can change that. SmartGen's own manual says so:
+#
+#   "HGM6110NC/6120NC has RS485 port, HGM6110N/6120N without."
+#   — HGM6100N Series Genset Controller User Manual v2.2, 2023-10-16, p.5
+#
+# The RS485-capable sibling is the NC suffix. No SmartGen protocol document
+# for the NC variant could be found, so it is not mapped here either — the
+# only HGM6xxx protocol document that exists is for the HGM6120T, a
+# different product with GPS and GSM registers, on a DIFFERENT register
+# architecture whose addresses do not transfer. A site with an HGM6110N or
+# HGM6120N needs the controller changed, not a software change.
+#
+# HGM7110N and HGM7120N are also NOT mapped. Their addresses match this map
+# exactly, but their protocol document prints no unit column at all — and
+# the one thing this vendor's documents demonstrably disagree about IS the
+# scale factor (see below). Inferring units from a sibling is precisely the
+# inference the evidence contradicts.
+#
+# SOURCES (full ledger: docs/vendor-integrations/SOURCES.md)
+#   G1 = SmartGen "HGM9510 HGM9520 HGM9530 COMMUNICATION PROTOCOL", v1.4,
+#        2024-11-08, from smartgen.cn.
+#   G2 = SmartGen "HGM7220N HGM7220S COMMUNICATION PROTOCOL", v1.2,
+#        2025-05-19, from smartgen.cn.
+#   G3 = SmartGen "HGM9510 COMMUNICATION PROTOCOL", v1.1, 2021-10-21 — the
+#        superseded revision, used only to date the scale-factor change.
+#   Read 19 September 2026.
+#
+# ADDRESSING: SmartGen prints TWO address columns side by side, "Modbus
+# Address" and "PLC Address" (4xxxx). The wire takes the Modbus column. G1
+# settles it with a worked byte example: a read of the register printed as
+# "0103" goes out as 00 67H, which is 103 decimal, not 40104. Using the PLC
+# column would read 40001 registers too high.
+#
+# WORD ORDER: LOW WORD AT THE LOWER ADDRESS. Same worked example — register
+# 0103 returns E240H, register 0104 returns 0001H, and the document combines
+# them as 0001E240H = 123456. So the lower address is the low-order word,
+# which is the opposite of Deep Sea. Every 32-bit register below therefore
+# carries a max bound. Reading the words the wrong way round turns a real
+# 200 kW into roughly 13 GW, which lands outside the bound and is published
+# with quality=suspect — so it stops counting as trusted telemetry instead
+# of sitting in the series looking like a reading.
+#
+# SENTINEL: 32766 means "no normal data" and the controller displays "###".
+# Quoted in G1 and G2 both, near-verbatim. It is declared on every 16-bit
+# register below. Without it a genset with no oil-pressure sender publishes
+# 32766 kPa as a reading.
+#
+# THE SCALE FACTORS CHANGED BETWEEN DOCUMENT REVISIONS, and getting it wrong
+# is a silent factor of ten on the number an operator reads:
+#
+#   Active, reactive and apparent power (0103-0130). G3, the 2021 revision,
+#     prints no ratio column for these rows, meaning the raw value is kW.
+#     G1 and G2 both print ratio 0.1. G1's own changelog says "Update
+#     partial address ratio of 03 function code", so this is a dated
+#     correction, not an ambiguity. This map uses 0.1 — but a unit running
+#     old firmware would read ten times low, which is why confirming the
+#     power figure against the controller's own display is the first
+#     commissioning check.
+#
+#   Phase currents (0095-0098). G1 says 0.1, G2 and G3 say 1, for the same
+#     addresses. Unresolved, and unresolvable from the documents. It costs
+#     nothing here: there is no canonical metric for genset phase current,
+#     so those registers are not read and the disagreement cannot reach a
+#     reading.
+#
+# NOT VALIDATED ON HARDWARE. verification: community.
+
+vendor: smartgen
+model_family: HGM7220N/7220S and HGM9510/9520/9530
+source: >-
+  SmartGen "HGM9510 HGM9520 HGM9530 COMMUNICATION PROTOCOL" v1.4 2024-11-08;
+  SmartGen "HGM7220N HGM7220S COMMUNICATION PROTOCOL" v1.2 2025-05-19;
+  SmartGen "HGM9510 COMMUNICATION PROTOCOL" v1.1 2021-10-21 (superseded,
+  used only to date the ratio change); all from smartgen.cn; read 2026-09-19
+verification: community
+notes: >-
+  Community transcription from two current SmartGen protocol documents that
+  agree on every address read here, simulator-exercised only. Covers the
+  RS485 families only — HGM6110N/6120N have no RS485 port at all, and
+  HGM7110N/7120N are excluded because their own document prints no units.
+  Confirm the power reading against the controller's display at
+  commissioning: the scale factor for the power registers changed between
+  document revisions.
+
+protocol_defaults:
+  protocol: rtu
+  baudrate: 9600          # src: G1 "9600bps fixed"; G2 9600
+  parity: N               # src: G1 "None (fixed)"; G2 None
+  stopbits: 2             # src: G1 "2-bit (fixed)"; G2 "default 2-bit" — NOT the usual 8N1
+  bytesize: 8             # src: G1, G2
+  unit_id: 1              # src: G2 "1-254, default 1"; G1 same range
+  function_code: 3        # src: G1 "supported function code: 03H, 05H, 06H" — 03H is the only read
+  address_base: 0         # src: G1 worked example sends 00 67H for the register printed 0103
+  max_gap: 8
+  request_spacing_ms: 0
+
+# Read once at start-up and shipped as tier-3 evidence, never as telemetry.
+identity:
+  # Which state the set was in when the sweep ran, so a validation record
+  # says what the machine was doing. Same intent as the DSE map's 772.
+  gen_status_at_start: {address: 189, type: uint16, na: [32766]}   # src: G1 Table 6 "Generator Status"; G2 Table 6
+
+assets: [diesel_genset]
+optional_assets: [grid_connection]
+
+groups:
+  - name: engine
+    poll_interval_seconds: 30
+    registers:
+      - {id: status, metric: genset.status, address: 189, type: enum, asset: diesel_genset,   # src: G1 Table 16; G2 Table 9 — identical numbering and labels
+         values: {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7,
+                  8: 8, 9: 9, 10: 10, 11: 11, 12: 12, 13: 13, 14: 14, 15: 15},
+         na: [32766],
+         notes: "SmartGen's own 16-state table, carried through unchanged:
+                 0 standby, 1 preheat, 2 fuel output, 3 cranking, 4 crank
+                 rest, 5 safety delay, 6 start idle, 7 high-speed warming up,
+                 8 wait for load, 9 normal running, 10 high-speed cooling,
+                 11 stop idle, 12 ETS, 13 wait for stop, 14 stop failure,
+                 15 after stop. These are vendor-local codes and do NOT line
+                 up with the DSE map's 0-7, which are SAE states. A code
+                 outside 0-15 declines to emit rather than inventing a state"}
+
+      - {id: oil_pressure, metric: genset.oil_pressure_kpa, address: 151, type: int16,   # src: G1 Table 6 "Oil Pressure", ratio 1, kPa; G2 same address, "Pressure Sensor Value"
+         asset: diesel_genset, na: [32766], min: 0, max: 1500}
+      - {id: coolant_temp, metric: genset.coolant_temperature_c, address: 149, type: int16,   # src: G1 Table 6 ratio 1, degC; G2 same address
+         asset: diesel_genset, na: [32766], min: -40, max: 200,
+         notes: "UNVERIFIED — bench required. The two documents name this
+                 register differently: G1 calls it 'Generator Temp.' and G2
+                 calls it the generic 'Temp. Sensor Value'. On a standard
+                 installation the controller's analogue temperature sender IS
+                 the coolant sender, which is why it is mapped here — but
+                 that is an installation convention, not something either
+                 document states. Confirm against the controller's display"}
+      - {id: fuel_level, metric: genset.fuel_level_pct, address: 153, type: int16,   # src: G1 Table 6 "Fuel Level", ratio 1, %; G2 "Level Sensor Value"
+         asset: diesel_genset, na: [32766], min: 0, max: 100}
+      - {id: start_battery_v, metric: genset.starting_battery_voltage_v, address: 142,   # src: G1 Table 6 "Battery Voltage", ratio 0.1, V
+         type: int16, scale: 0.1, asset: diesel_genset, na: [32766], min: 0, max: 60}
+
+  - name: electrical
+    poll_interval_seconds: 30
+    registers:
+      - {id: output_voltage, metric: genset.output_voltage_v, address: 75, type: uint16,   # src: G1 Table 6 "Gen UAB", ratio 1, V; G2 same
+         asset: diesel_genset, na: [32766], min: 0, max: 1000,
+         notes: "the A-B LINE voltage, which is what a set is rated at and
+                 what an operator quotes. The controller also reports UBC,
+                 UCA and the three line-to-neutral voltages at 0076-0080;
+                 only one can be genset.output_voltage_v without colliding
+                 on the measurements key, and this is the map's choice rather
+                 than something the document nominates"}
+      - {id: output_frequency, metric: genset.output_frequency_hz, address: 84, type: int16,   # src: G1 Table 6 "Gen Frequency", ratio 0.01, Hz; G2 same
+         scale: 0.01, asset: diesel_genset, na: [32766], min: 0, max: 100}
+
+      - {id: power_total, metric: genset.power_w, address: 109, type: int32_le, scale: 100.0,   # src: G1 Table 6 "Total Active Power" 0109-0110, 32-bit signed, ratio 0.1, kW; G2 same
+         asset: diesel_genset, min: -500000, max: 5000000,
+         notes: "the register is TENTHS OF A KILOWATT, so scale 100 converts
+                 to watts. int32_le because the lower address holds the low
+                 word — G1's worked example proves it. The bounds are the
+                 guard: a reversed word order puts the value three orders of
+                 magnitude out, so it is flagged suspect rather than trusted.
+                 UNVERIFIED — bench required on the scale, because the
+                 superseded 2021 revision of this document gives these rows
+                 no ratio at all"}
+
+      # genset.load_pct is deliberately absent. Neither document publishes a
+      # load-percentage register for these families, and deriving one would
+      # need a rated-power figure the controller does not report. The DSE map
+      # has one because DSE's own protocol carries it; SmartGen's does not.
+
+  - name: counters
+    poll_interval_seconds: 300
+    registers:
+      - {id: runtime, metric: genset.runtime_hours, address: 199, type: uint16,   # src: G1 Table 6 "Accum. Run Hours", single register, 0-65535 h; G2 identical
+         asset: diesel_genset, na: [32766], min: 0, max: 65535,
+         notes: "a SINGLE 16-bit register of whole hours, not a 32-bit pair —
+                 which is the trap, because the compact SmartGen families
+                 split this across two registers. Minutes and seconds sit at
+                 0200 and 0201 and are not read: under an hour of resolution
+                 on a lifetime counter is not worth a second metric"}
+      - {id: starts, metric: genset.starts, address: 202, type: uint16,   # src: G1 Table 6 "Accum. Start Times"; G2 identical
+         asset: diesel_genset, na: [32766], min: 0, max: 65535}
+      - {id: energy, metric: genset.energy_kwh, address: 203, type: int32_le, scale: 0.1,   # src: G1 Table 6 "Accum. Energy(kWh)" 0203-0204, 32-bit signed, ratio 0.1
+         asset: diesel_genset, min: 0, max: 100000000,
+         notes: "low word at the lower address, as everywhere in this family.
+                 The max bound is the word-order guard, flagging a reversed
+                 read suspect. G2's own table was
+                 not separately confirmed for this row — UNVERIFIED — bench
+                 required"}
+      - {id: fuel_consumed, metric: genset.fuel_consumed_l, address: 171, type: uint32_le,   # src: G1 Table 6 "Accumulated Fuel Consumption" 0171-0172, 32-bit unsigned, ratio 1, L
+         asset: diesel_genset, min: 0, max: 100000000,
+         notes: "UNVERIFIED — bench required; G1 only. This is the
+                 controller's OWN accumulated figure, read off a flow sender
+                 or a CAN engine ECU, not something this map derives. It must
+                 not be treated as measured fuel until a bench session
+                 confirms a sender is actually fitted — an unfitted sender
+                 reports a plausible-looking zero, not an error"}
+      - {id: fuel_rate, metric: genset.fuel_flow_lph, address: 170, type: int16, scale: 0.1,   # src: G1 Table 6 "Fuel Consumption", ratio 0.1, L/h
+         asset: diesel_genset, na: [32766], min: 0, max: 2000,
+         notes: "UNVERIFIED — bench required; G1 only, and the same
+                 sender-fitted caveat as fuel_consumed. Note the difference
+                 from the DSE map, which does NOT read fuel flow: there the
+                 protocol has no such register and the only way to get a
+                 number would be to derive it from load percentage, which is
+                 a guess. Here the controller publishes the register itself"}
+
+  - name: mains
+    # The ATS side. Optional, because a prime-power set has no mains to watch.
+    poll_interval_seconds: 30
+    registers:
+      - {id: mains_voltage, metric: grid.voltage_v, address: 55, type: uint16,   # src: G1 Table 6 "Mains UAB", ratio 1, V; G2 same
+         asset: grid_connection, na: [32766], min: 0, max: 1000,
+         notes: "A-B line voltage, same choice as the generator side. G1's
+                 own printed decimal range for this row says 0-4294967295
+                 against its own '16-bit unsigned' width column, which cannot
+                 both be true; the width, ratio and unit columns are taken as
+                 authoritative and the printed range as a document error"}
+      - {id: mains_frequency, metric: grid.frequency_hz, address: 64, type: int16,   # src: G1 Table 6 "Mains Frequency", ratio 0.01, Hz; G2 same
+         scale: 0.01, asset: grid_connection, na: [32766], min: 0, max: 100}

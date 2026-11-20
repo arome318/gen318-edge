@@ -1,0 +1,219 @@
+# Deye single-phase LOW-VOLTAGE (48 V) hybrid, up to 8 kW.
+#
+# MODELS (one register map, by rated power — not by suffix, see below):
+#   SUN-3.6K / 5K / 6K-SG03LP1-EU
+#   SUN-5K / 6K / 8K-SG05LP1-EU (incl. -AM2 variants)
+#   SUN-5K / 8K-SG01LP1 (older 8 kW and US units)
+# 10-16 kW single-phase units (SUN-10K/12K-SG02LP1, SUN-14K/16K-SG01LP1) use
+# deye_sg02lp1, which extends this file. The suffix does NOT decide it: the
+# SG01LP1 suffix exists at both 8 kW and 16 kW. Rated power (identity
+# registers 16-17, read by the probe) does.
+#
+# The residential workhorse. Local Modbus RTU on the inverter's own RS485
+# port; no cloud, no vendor terms. The single-phase register range (0-249) is
+# a DIFFERENT map from the three-phase one (500-700): reusing deye_sg04lp3 on
+# one of these produces numbers, all of them wrong.
+#
+# SOURCES (see docs/vendor-integrations/SOURCES.md §2a for the full ledger)
+#   A = kellerza/sunsynk, src/sunsynk/definitions/single_phase.py
+#       @ 8c7997e2ebdf20567d5b34ecd851bef5acc907c6, identity.py
+#       @ dec4ff8dab0f95bce270ea9fc19b1bf311dc43fa, helpers.py (word order)
+#       @ 9f72b7a7d19540d42ecba2ca8c09b9ba6913c441  (Apache-2.0)
+#       A negative factor in A means "signed", not "negated".
+#   B = kbialek/deye-inverter-mqtt, src/deye_sensors_deye_hybrid.py
+#       @ 16a406b856a29e4d5a67377a620d6dd7e2e6f44c and
+#       deye_sensors_deye_sg03lp1.py @ 65c891c21e85384a76635dc47b88f331b70b170f
+#       (Apache-2.0). Talks to the Solarman stick, not the RS485 port.
+#   C = davidrapan/ha-solarman, inverter_definitions/deye_hybrid.yaml
+#       @ 34c079e020db5dd3062adc3522e8800a19591418 (MIT), modifier 0 (the
+#       default); sensor.py @ b44137692c626836eb592d5eceec07e5447c0044 for the
+#       battery-power sign.
+#   D = Deye "Modbus RTU Protocol" V118 (bilingual vendor PDF, publicly
+#       attached at github.com/user-attachments/files/16597960, linked from
+#       C's header), sha256 7444d2ef7dee282d5dbc734e73d6792788bc8a323ca532c8202d8d5f976b3717
+#   E = slipx06/sunsynk-power-flow-card docs/configuration.md
+#       @ dce84662711ab3a19aa31749df0eb25929a098d3 (MIT) — sign conventions only
+#   Read 12 October 2026. Every register below is stated by at least two of
+#   A-D; where they disagree the line says so.
+#
+# NOT VALIDATED ON HARDWARE. verification: community — nothing here may be
+# described as supported until a unit has been read on site.
+#
+# COMMISSIONING CHECKS (docs/ONBOARDING_DEYE_HYBRID.md §4a):
+#   - rated power in the probe's identity block is <= 8 kW (else deye_sg02lp1)
+#   - sign of 169 (grid) and 190/191 (battery) against the inverter's display
+#   - whether 169 is the inverter's grid port or the site's main supply
+#   - 178 measures the backed-up LOAD port only, not the whole house
+#   - RS485 pins, which vary by model and year — read this unit's manual
+
+vendor: deye
+model_family: >-
+  single-phase LV hybrid <= 8 kW (SUN-3.6K/5K/6K-SG03LP1, SUN-5K/6K/8K-SG05LP1,
+  SUN-5K/8K-SG01LP1)
+source: >-
+  kellerza/sunsynk single_phase.py @8c7997e2 + identity.py @dec4ff8d;
+  kbialek/deye-inverter-mqtt deye_sensors_deye_hybrid.py @16a406b8 +
+  deye_sensors_deye_sg03lp1.py @65c891c2; davidrapan/ha-solarman
+  deye_hybrid.yaml @34c079e0; Deye Modbus RTU Protocol V118 (sha256 7444d2ef);
+  read 2026-10-12
+verification: community
+notes: >-
+  Community transcription cross-checked against Deye's own V118 protocol
+  table, simulator-exercised only. Battery and grid sign directions, the
+  RS485 pinout, whether the grid register is the inverter's port or the
+  site's main supply, and the generator-port sign are all unconfirmed on a
+  physical unit.
+
+protocol_defaults:
+  protocol: rtu
+  baudrate: 9600          # src: D "Baud rate: 9600bps RS232 or RS485"; A connection default 9600
+  parity: N               # UNVERIFIED — bench required (no source pins parity; 8N1 is the field norm)
+  stopbits: 1             # UNVERIFIED — bench required
+  bytesize: 8
+  unit_id: 1              # some units ship as 0 — set to 1 in the inverter menu
+  function_code: 3        # src: D §2.6 (0x03 read, 0x10 write — this map never writes)
+  address_base: 0         # src: A, B, C and D all use the printed number on the wire
+  max_gap: 8
+  request_spacing_ms: 0
+
+# Read once at initialize and shipped as tier-3 evidence, never as telemetry.
+identity:
+  device_type: {address: 0, type: uint16}       # src: A identity.py, C "Device" (0x0003 = single-phase hybrid)
+  protocol_version: {address: 2, type: uint16}  # src: A identity.py, C "Device Protocol Version"
+  serial: {address: 3, type: string, words: 5}  # src: A identity.py, C, D (ten ASCII bytes at 3-7)
+  # Rated power decides WHICH single-phase map a unit needs (<= 8 kW here,
+  # 10-16 kW deye_sg02lp1). It is evidence for that choice, not telemetry.
+  rated_power_w: {address: 16, type: uint32_le, scale: 0.1}   # src: A RATED_POWER (16,17) x0.1, C (0x10,0x11) x0.1, D 016/017 0.1 W low word first
+  # Register 90 (DC transformer / radiator) is evidence only; 91 is the
+  # inverter.temperature_c reading. Both on one asset would collide on the
+  # measurements primary key (the three-phase map's decision 4, same reason).
+  dc_transformer_temp_c: {address: 90, type: uint16, scale: 0.1, offset: -100}  # src: A TempSensor(90), B 90 offset -100, C 0x5A offset 1000, D 090 "0 C indicated as 1000"
+
+assets: [inverter, battery, solar_array, grid_connection]
+optional_assets: [load, diesel_genset]
+
+features:
+  # The gen port is only telemetry when a genset is wired to it AND the
+  # inverter's AUX/GEN port is set to generator input (not smart load).
+  gen_port: false
+
+groups:
+  - name: power
+    poll_interval_seconds: 30
+    registers:
+      # ── Inverter ────────────────────────────────────────────
+      - {id: inv_state, metric: inverter.state, address: 59, type: enum, asset: inverter,   # src: A InverterStateSensor(59), C 0x3B, D 059
+         values: {0: 0, 1: 1, 2: 2, 3: 3, 4: 4}}
+      # 0 standby, 1 self-check, 2 normal, 3 alarm, 4 fault — C and D agree.
+      # Any other code refuses rather than emitting a raw number.
+
+      # Four fault words. Decoded as the first set bit's 1-based position; the
+      # raw words travel with the reading so a bench session can build the
+      # code table. B has no fault sensor.
+      - {id: inv_fault, metric: inverter.error_code, address: 103, type: fault_bits,   # src: A FaultSensor(103-106), C 0x67-0x6A, D 103-106
+         words: 4, asset: inverter}
+
+      - {id: inv_temp, metric: inverter.temperature_c, address: 91, type: uint16,   # src: A TempSensor(91), B 91, C 0x5B, D 091 (IGBT / AC radiator)
+         scale: 0.1, offset: -100, asset: inverter, min: -20, max: 120,
+         notes: "raw*0.1-100; all four agree. B and C read the word signed,
+                 A unsigned — identical below raw 32768 (3176 degC)"}
+
+      - {id: inv_w, metric: inverter.ac_output_power_w, address: 175, type: int16, asset: inverter}   # src: A 175, B 175 signed, C 0xAF, D 175 signed 1 W
+      - {id: inv_v, metric: inverter.ac_output_voltage_v, address: 154, type: uint16, scale: 0.1, asset: inverter}   # src: A 154, C 0x9A, D 154 (B has no inverter-side voltage)
+      - {id: inv_a, metric: inverter.ac_output_current_a, address: 164, type: int16, scale: 0.01, asset: inverter}   # src: A 164, B 164 signed, C 0xA4, D 164 signed 0.01 A
+      - {id: inv_hz, metric: inverter.ac_output_freq_hz, address: 193, type: uint16, scale: 0.01, asset: inverter}   # src: A 193, C 0xC1, D 193 (B has none)
+
+      # ── Grid ────────────────────────────────────────────────
+      - {id: grid_v, metric: grid.voltage_v, address: 150, type: uint16, scale: 0.1, asset: grid_connection}   # src: A 150, B 150, C 0x96, D 150 (L1-N)
+      - {id: grid_hz, metric: grid.frequency_hz, address: 79, type: uint16, scale: 0.01, asset: grid_connection}   # src: A 79, B 79, C 0x4F, D 079
+
+      # One signed reading carries both directions. D states the direction
+      # outright ("> 0 BUY, < 0 SELL") and E expects the same, so positive is
+      # import. That is still a document, not a unit.
+      - {id: grid_w, metric: grid.import_power_w, address: 169, type: int16,   # src: A 169, B 169 signed, C 0xA9 (modifier 0), D 169
+         asset: grid_connection, split_negative_to: grid.export_power_w,
+         notes: "UNVERIFIED — bench required. Direction from D (>0 buy) and E.
+                 169 is the inverter's own grid-port reading; with an external
+                 CT fitted, 172 is the site's main supply instead (D 'grid
+                 external total power'). Which one a site needs is a
+                 commissioning question, not a map default"}
+
+      # ── Battery ─────────────────────────────────────────────
+      - {id: bat_soc, metric: battery.soc_pct, address: 184, type: uint16, asset: battery, min: 0, max: 100}   # src: A 184, B 184, C 0xB8, D 184
+      - {id: bat_v, metric: battery.voltage_v, address: 183, type: uint16, scale: 0.01, asset: battery}   # src: A 183 x0.01, B 0.01, C 0.01, D "4100 = 41.00 V"
+      - {id: bat_temp, metric: battery.temperature_c, address: 182, type: uint16,   # src: A TempSensor(182), B offset -100, C offset 1000, D "+1000, 1200 = 20.0 C"
+         scale: 0.1, offset: -100, asset: battery, min: -30, max: 90}
+
+      # Deye reports battery flow as OUTPUT: positive = discharging. C's own
+      # code calls > +50 W "discharging", E expects positive = discharge, and
+      # D names 190 "battery output power". The catalogue's canonical direction
+      # is positive = CHARGING into the bank, so the map negates.
+      - {id: bat_w, metric: battery.power_w, address: 190, type: int16, scale: -1, asset: battery,   # src: A 190 signed, B 190 signed, C 0xBE, D 190 signed 1 W
+         notes: "UNVERIFIED — bench required: negated so positive = charging.
+                 Charge the bank on site and confirm the sign before the
+                 number is used for anything"}
+      - {id: bat_i, metric: battery.current_a, address: 191, type: int16, scale: -0.01, asset: battery,   # src: A 191 signed 0.01, B 0.01 signed, C 0xBF modifier 0 = 0.01, D 191 signed 0.01 A
+         notes: "UNVERIFIED — bench required: negated to match battery.power_w.
+                 Only D's 'battery output current' wording states a direction"}
+
+      # ── PV ──────────────────────────────────────────────────
+      - {id: pv1_w, metric: solar.mppt1_power_w, address: 186, type: uint16, asset: solar_array}   # src: A 186, B 186 unsigned, C 0xBA, D 186 1 W
+      - {id: pv2_w, metric: solar.mppt2_power_w, address: 187, type: uint16, asset: solar_array}   # src: A 187, B 187 unsigned, C 0xBB, D 187 1 W
+      # A reads these signed, B/C unsigned. Identical across 0-32767 W, and
+      # this family is at most 8 kW, so no reachable reading differs.
+
+      - {id: pv_w, metric: solar.pv_power_w, derived: sum, of: [pv1_w, pv2_w], asset: solar_array}
+      # All-or-nothing: a string that fails to read withholds the total.
+
+      - {id: pv1_v, metric: solar.mppt1_voltage_v, address: 109, type: uint16, scale: 0.1, asset: solar_array}   # src: A 109, B 109, C 0x6D, D 109
+      - {id: pv1_a, metric: solar.mppt1_current_a, address: 110, type: uint16, scale: 0.1, asset: solar_array}   # src: A 110, B 110, C 0x6E, D 110
+      - {id: pv2_v, metric: solar.mppt2_voltage_v, address: 111, type: uint16, scale: 0.1, asset: solar_array}   # src: A 111, B 111, C 0x6F, D 111
+      - {id: pv2_a, metric: solar.mppt2_current_a, address: 112, type: uint16, scale: 0.1, asset: solar_array}   # src: A 112, B 112, C 0x70
+
+      # ── Load (optional role) ────────────────────────────────
+      - {id: load_w, metric: load.power_w, address: 178, type: int16, asset: load,   # src: A 178, C 0xB2 (modifier 0), D 178 "load side total power" (B has none)
+         notes: "UNVERIFIED — bench required. This is the inverter's LOAD
+                 (backup/essential) port. Circuits wired on the grid side of
+                 the inverter never pass through it, so it is NOT whole-house
+                 consumption on a site with non-essential circuits. Confirm at
+                 commissioning; disable for this site if it cannot be settled"}
+
+      # ── Generator port (optional role, off by default) ──────
+      - {id: gen_w, metric: genset.power_w, address: 166, type: int16,   # src: A 166 signed, D 166 signed; B and C read it unsigned
+         asset: diesel_genset, feature: gen_port, min: 0,
+         notes: "UNVERIFIED — bench required. D: positive when the port feeds
+                 a load, NEGATIVE when it is an input from a micro-inverter;
+                 it says nothing about generator input. Read signed so a
+                 negative arrives as a negative (and is flagged suspect by
+                 min: 0) rather than as 65,000 W"}
+      - {id: gen_v, metric: genset.output_voltage_v, address: 181, type: uint16, scale: 0.1,   # src: C 0xB5 x0.1, D 181 "Gen port voltage" (V116). A comments 181 out
+         asset: diesel_genset, feature: gen_port,
+         notes: "UNVERIFIED — bench required; C and D only"}
+      - {id: gen_hz, metric: genset.output_frequency_hz, address: 196, type: uint16, scale: 0.01,   # src: C 0xC4 x0.01, D 196 0.01 Hz
+         asset: diesel_genset, feature: gen_port,
+         notes: "UNVERIFIED — bench required; C and D only"}
+
+  - name: energy
+    poll_interval_seconds: 300
+    registers:
+      # Every lifetime counter here is uint32 with the LOW word at the LOWER
+      # address (A helpers.py "all inverters are little-endian", B
+      # low_word_first, C combines low-first, D "low word"/"high word").
+      - {id: pv_today_kwh, metric: solar.daily_yield_kwh, address: 108, type: uint16, scale: 0.1, asset: solar_array}   # src: A 108, B 108, C 0x6C, D 108
+      - {id: pv_total_kwh, metric: solar.total_yield_kwh, address: 96, type: uint32_le, scale: 0.1, asset: solar_array}   # src: A (96,97), B 96 double, C (0x60,0x61), D 096/097
+
+      - {id: bat_charge_kwh, metric: battery.charge_energy_kwh, address: 72, type: uint32_le, scale: 0.1, asset: battery}   # src: A (72,73), B 72 double, C (0x48,0x49), D 072/073
+      - {id: bat_discharge_kwh, metric: battery.discharge_energy_kwh, address: 74, type: uint32_le, scale: 0.1, asset: battery}   # src: A (74,75), B 74 double, C (0x4A,0x4B), D 074/075
+
+      # Lifetime grid import is the one Deye counter whose halves are NOT
+      # adjacent: low word 78, high word 80, with grid frequency at 79. Read
+      # as one 3-word span so both halves come from the same instant.
+      - {id: grid_import_kwh, metric: grid.import_energy_kwh, address: 78, type: uint32_le,   # src: A (78,80), C (0x4E,0x50), D 078 low / 080 high
+         high_word_offset: 2, scale: 0.1, asset: grid_connection,
+         notes: "B reads 78-79 as one pair, which puts grid frequency (79, by
+                 B's own definition) in the high word. A, C and D agree on 80;
+                 B is not followed here"}
+      - {id: grid_export_kwh, metric: grid.export_energy_kwh, address: 81, type: uint32_le, scale: 0.1, asset: grid_connection}   # src: A (81,82), B 81 double, C (0x51,0x52), D 081/082
+      # Daily counters (70/71 battery, 76/77 grid, 84 load) and the lifetime
+      # load counter (85/86) are read by the sources but have no catalogue
+      # metric, so they are deliberately not emitted.

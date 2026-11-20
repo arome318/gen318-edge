@@ -1,0 +1,77 @@
+# Solis S5 / S6-EH1P and RHI hybrids — RS485_MODBUS RTU (ESINV-33000ID).
+#
+# TWO THINGS DIFFER FROM EVERY OTHER MAP HERE:
+#   - FC04 input registers, not FC03 holding registers.
+#   - The printed 33xxx numbers ARE the wire addresses. The reference
+#     implementation passes them through with no -1, which is the opposite of
+#     Sungrow, whose own protocol text says to subtract one. Address base is a
+#     per-vendor fact, not a Modbus rule.
+#
+# SOURCE: Pho3niX90/solis_modbus @ cb37e872eb07d97bf8ecd01cb167b10ffab98ae1
+# (MIT), custom_components/solis_modbus/sensor_data/hybrid_sensors.py plus
+# modbus_controller.py for the addressing. Read 18 September 2026.
+# Full ledger: docs/vendor-integrations/SOURCES.md.
+#
+# NOT VALIDATED ON HARDWARE. verification: community.
+
+vendor: solis
+model_family: S5 / S6-EH1P / RHI hybrid (ESINV-33000ID)
+source: >-
+  Pho3niX90/solis_modbus hybrid_sensors.py + modbus_controller.py @cb37e872
+  (MIT); read 2026-09-18
+verification: community
+notes: >-
+  RS485 direct is the reliable path. Some Solis loggers ship with local
+  Modbus TCP disabled, so a site that cannot reach port 502 is usually a
+  logger setting rather than a wiring fault.
+
+protocol_defaults:
+  protocol: rtu
+  baudrate: 9600
+  parity: N
+  stopbits: 1
+  bytesize: 8
+  unit_id: 1              # settable 1-99 on the inverter
+  function_code: 4        # src: modbus_controller.py calls read_input_registers
+  address_base: 0         # src: modbus_controller.py passes the printed number unchanged
+  max_gap: 8
+  request_spacing_ms: 0
+
+identity:
+  serial: {address: 33004, type: string, words: 16}   # src: hybrid_sensors.py:57-74
+
+assets: [inverter, battery, solar_array, grid_connection]
+
+groups:
+  - name: power
+    poll_interval_seconds: 30
+    registers:
+      - {id: pv_w, metric: solar.pv_power_w, address: 33057, type: uint32, asset: solar_array}   # src: hybrid_sensors.py:352-359 (Total PV Power)
+      - {id: inv_w, metric: inverter.ac_output_power_w, address: 33079, type: uint32, asset: inverter}   # src: hybrid_sensors.py:456-465 (Active Power)
+      - {id: inv_temp, metric: inverter.temperature_c, address: 33093, type: int16, scale: 0.1, asset: inverter}   # src: hybrid_sensors.py:488-497
+      - {id: grid_hz, metric: grid.frequency_hz, address: 33094, type: uint16, scale: 0.01, asset: grid_connection}   # src: hybrid_sensors.py:499-507
+      - {id: meter_v, metric: meter.voltage_v, address: 33128, type: uint16, scale: 0.1, asset: grid_connection}   # src: hybrid_sensors.py:618-637
+      - {id: meter_a, metric: meter.current_a, address: 33129, type: uint16, scale: 0.01, asset: grid_connection}   # src: hybrid_sensors.py:618-637
+      - {id: meter_w, metric: meter.power_w, address: 33130, type: uint32, asset: grid_connection,   # src: hybrid_sensors.py:638-647 (Meter Active Power)
+         notes: "UNVERIFIED — bench required: the source tags this U32 and
+                 decodes it unsigned, while the spec expected S32. Both give the
+                 same number for import; an export reading would differ. Confirm
+                 under a known export before relying on it"}
+
+      - {id: bat_v, metric: battery.voltage_v, address: 33133, type: uint16, scale: 0.1, asset: battery}   # src: hybrid_sensors.py:664-673
+      - {id: bat_a, metric: battery.current_a, address: 33134, type: int16, scale: 0.1, asset: battery}   # src: hybrid_sensors.py:674-684 (S16, signed)
+      - {id: bat_soc, metric: battery.soc_pct, address: 33139, type: uint16, asset: battery, min: 0, max: 100}   # src: hybrid_sensors.py:723-732
+      - {id: bat_soh, metric: battery.soh_pct, address: 33140, type: uint16, asset: battery, min: 0, max: 100}   # src: hybrid_sensors.py:733-739
+      # battery.power_w is deliberately ABSENT. The source decodes 33149-33150
+      # unsigned and keeps direction in a SEPARATE register (33135, 0 charge /
+      # 1 discharge), so a signed battery power cannot be read from one
+      # register. Emitting the magnitude as battery.power_w would report a
+      # discharging pack as charging. The signed current at 33134 carries the
+      # direction instead.
+
+  - name: energy
+    poll_interval_seconds: 300
+    registers:
+      - {id: pv_total_kwh, metric: solar.total_yield_kwh, address: 33029, type: uint32, asset: solar_array}   # src: hybrid_sensors.py:162-168 (scale 1 kWh)
+      - {id: pv_today_kwh, metric: solar.daily_yield_kwh, address: 33035, type: uint16, scale: 0.1, asset: solar_array}   # src: hybrid_sensors.py:195-200
+      - {id: meter_kwh, metric: meter.energy_kwh, address: 33126, type: uint32, scale: 0.001, asset: grid_connection}   # src: hybrid_sensors.py:608-617 (Meter Total Active Energy)

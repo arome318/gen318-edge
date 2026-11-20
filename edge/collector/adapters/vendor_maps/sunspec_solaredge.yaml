@@ -1,0 +1,35 @@
+# SolarEdge — SunSpec TCP preset.
+#
+# SOURCES: port/unit/client-limit corroborated via a third-party page and the
+# solaredge_modbus library — SolarEdge's own PDF was Cloudflare-blocked to
+# every method tried, so this is corroborated rather than primary and says so.
+# SunSpec model definitions: github.com/sunspec/models @ 90b4a331 (Apache-2.0).
+# Read 18 September 2026. Full ledger: docs/vendor-integrations/SOURCES.md.
+
+kind: sunspec_preset
+vendor: solaredge
+model_family: SetApp-era inverters
+source: >-
+  port 1502 / unit 1 / single client / 2-minute idle timeout corroborated via
+  solaredge_modbus and a third-party page; SolarEdge's own PDF could not be
+  fetched (Cloudflare); read 2026-09-18
+verification: community
+adapter: sunspec_modbus
+
+connection:
+  protocol: tcp
+  # 1502, not 502 — the single most common misconfiguration on this brand.
+  port: 1502
+  unit_id: 1
+  base_addresses: [40000]
+
+notes: >-
+  Enable Modbus TCP in SetApp (Site Communication). ONE client connection only,
+  with a two-minute idle timeout: the site must not also run another Modbus
+  client, and the adapter has to reconnect cleanly after an idle drop. Follower
+  inverters are unit 2, 3 and onwards.
+
+exclusions: >-
+  SolarEdge STORAGE is not read. The battery is not exposed as SunSpec model
+  802; it sits behind proprietary blocks, so battery telemetry from a
+  SolarEdge site is simply absent rather than approximated from something else.

@@ -1,0 +1,266 @@
+# Gen318 Edge — open, offline fault detection for solar mini-grids and hybrid sites
+# Standalone by default: leave CLOUD_API_URL empty and nothing leaves the box.
+# Targets: linux/arm64 (RPi 5 primary, RPi 4 compatible)
+# Total RAM budget: ~542 MB allocated, ~972 MB with OS + Docker overhead
+# RPi 5 (4 GB): leaves ~3.0 GB headroom
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: gen318-mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - mosquitto_data:/mosquitto/data
+      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: always
+    mem_limit: 64m
+    cpus: 0.25
+    # RAM budget: ~40 MB typical
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-W", "3"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  collector:
+    build:
+      context: ./edge
+      dockerfile: collector/Dockerfile.arm64
+    container_name: gen318-collector
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - ADAPTER_CONFIG_PATH=/config/adapters.yaml
+      - SQLITE_PATH=/data/gen318.db
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
+      - STORAGE_TARGET_DAYS=${STORAGE_TARGET_DAYS:-30}
+      - STORAGE_EXPECTED_ASSETS=${STORAGE_EXPECTED_ASSETS:-10}
+      - STORAGE_METRICS_PER_ASSET=${STORAGE_METRICS_PER_ASSET:-40}
+      - STORAGE_BYTES_PER_MEASUREMENT=${STORAGE_BYTES_PER_MEASUREMENT:-160}
+      - STORAGE_RESERVE_BYTES=${STORAGE_RESERVE_BYTES:-2147483648}
+      - STORAGE_WARNING_USED_PCT=${STORAGE_WARNING_USED_PCT:-80}
+      - STORAGE_CRITICAL_USED_PCT=${STORAGE_CRITICAL_USED_PCT:-90}
+      - STORAGE_EMERGENCY_USED_PCT=${STORAGE_EMERGENCY_USED_PCT:-96}
+      - POLL_INTERVAL_SECONDS=60
+      - DEVICE_ID=${DEVICE_ID}
+      # Register probe: opt-in, read-only mapping evidence (Doc 15 follow-up).
+      # Host stays empty by default — set it to the GX device IP to enable.
+      - EDGE_REGISTER_PROBE_ENABLED=${EDGE_REGISTER_PROBE_ENABLED:-false}
+      - EDGE_REGISTER_PROBE_HOST=${EDGE_REGISTER_PROBE_HOST:-}
+      - EDGE_REGISTER_PROBE_PORT=${EDGE_REGISTER_PROBE_PORT:-502}
+      - EDGE_REGISTER_PROBE_RANGES=${EDGE_REGISTER_PROBE_RANGES:-225:280-310,225:325-335}
+      - EDGE_REGISTER_PROBE_INTERVAL_SECONDS=${EDGE_REGISTER_PROBE_INTERVAL_SECONDS:-3600}
+    volumes:
+      - collector_data:/data
+      - ./config/adapters.yaml:/config/adapters.yaml:ro
+    restart: always
+    mem_limit: 256m
+    cpus: 0.5
+    # RAM budget: ~150 MB (adapter instances + MQTT client)
+
+  # Opt-in: only for a site with a CAN tap on the inverter-to-battery bus.
+  # Start it explicitly, the way MLflow is started in the cloud stack:
+  #     docker compose --profile can up -d
+  #
+  # It exists as its own service rather than as another adapter inside the
+  # collector because a SocketCAN interface lives in a network namespace, and
+  # no Docker feature hands a container ONE host interface while it keeps its
+  # own. Sharing the host namespace is the only in-container option, so this
+  # confines that to a single-purpose process instead of granting it to the
+  # collector, which loads every vendor adapter and its credentials.
+  #
+  # BEFORE STARTING IT, on the host:
+  #     ip link set can0 type can bitrate 500000 listen-only on
+  #     ip link set up can0
+  # The bridge verifies listen-only and refuses to open the bus otherwise. It
+  # never reconfigures the interface: two active masters on a BMS bus is how a
+  # battery disconnects itself.
+  can-bridge:
+    build:
+      context: ./edge
+      dockerfile: collector/Dockerfile.arm64
+    container_name: gen318-can-bridge
+    profiles: ["can"]
+    command: ["python", "-m", "collector.can_bridge"]
+    # Required for SocketCAN: can0 is a network interface on the host, not a
+    # device node, so `devices:` cannot pass it through.
+    network_mode: host
+    environment:
+      # Under host networking the broker is reachable on loopback, where
+      # mosquitto already publishes 1883.
+      - MQTT_HOST=127.0.0.1
+      - MQTT_PORT=1883
+      - SQLITE_PATH=/data/gen318.db
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
+      - DEVICE_ID=${DEVICE_ID}
+      - EDGE_CAN_INTERFACE=${EDGE_CAN_INTERFACE:-can0}
+      - EDGE_CAN_BITRATE=${EDGE_CAN_BITRATE:-500000}
+      - EDGE_CAN_PROFILE=${EDGE_CAN_PROFILE:-victron_generic}
+      # The battery asset this bus reports. No default: an unattributed
+      # battery reading has nowhere to land, and the bridge refuses without it.
+      - EDGE_CAN_ASSET_ID=${EDGE_CAN_ASSET_ID:-}
+      - EDGE_CAN_REQUIRE_LISTEN_ONLY=${EDGE_CAN_REQUIRE_LISTEN_ONLY:-true}
+      - EDGE_CAN_POLL_SECONDS=${EDGE_CAN_POLL_SECONDS:-1}
+    volumes:
+      # The same database the collector writes. Two containers already share
+      # it read-write (collector inserts, sync marks synced) over a
+      # write-ahead journal; this is that pattern, not a new one.
+      - collector_data:/data
+    restart: always
+    mem_limit: 64m
+    cpus: 0.25
+    # RAM budget: ~30 MB (one python-can bus + the SQLite handle)
+
+  inference:
+    build:
+      context: ./edge
+      dockerfile: inference/Dockerfile.arm64
+    container_name: gen318-inference
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - MODEL_PATH=/models
+      - SQLITE_PATH=/data/gen318.db
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
+      - INFERENCE_INTERVAL_SECONDS=300
+      - SITE_UTC_OFFSET_HOURS=${SITE_UTC_OFFSET_HOURS:-1}
+      - SITELEARN_INTERVAL_SECONDS=${SITELEARN_INTERVAL_SECONDS:-900}
+      - DEVICE_ID=${DEVICE_ID}
+      - MODEL_TRUSTED_PUBLIC_KEYS_JSON=${MODEL_TRUSTED_PUBLIC_KEYS_JSON:-{}}
+    volumes:
+      - inference_models:/models
+      - collector_data:/data:ro
+    restart: always
+    mem_limit: 256m
+    cpus: 1.0
+    # RAM budget: ~36 MB actual (XGBoost native, 3 models ~1.3 MB total)
+
+  sync:
+    build:
+      context: ./edge
+      dockerfile: sync/Dockerfile.arm64
+    container_name: gen318-sync
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - CLOUD_API_URL=${CLOUD_API_URL:-}
+      - DEVICE_ID=${DEVICE_ID}
+      - DEVICE_CERT_PATH=/certs/device.pem
+      - DEVICE_KEY_PATH=/certs/device.key
+      - CA_CERT_PATH=/certs/gen318-ca.pem
+      - SQLITE_PATH=/data/gen318.db
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
+      - SYNC_INTERVAL_SECONDS=60
+      - CERT_PIN_SHA256=${CERT_PIN_SHA256}
+      - MODEL_PATH=/models
+      - MODEL_TRUSTED_PUBLIC_KEYS_JSON=${MODEL_TRUSTED_PUBLIC_KEYS_JSON:-{}}
+      - MODEL_ARTIFACT_MAX_BYTES=${MODEL_ARTIFACT_MAX_BYTES:-52428800}
+    volumes:
+      - collector_data:/data
+      - ./certs:/certs:ro
+      - edge_metrics:/data/metrics:ro
+      - inference_models:/models
+    restart: always
+    mem_limit: 128m
+    cpus: 0.5
+    # RAM budget: ~80 MB (HTTP client + gzip compression + queue)
+
+  # Offline SMS: alerts to technicians, POWER status replies, fault labels.
+  # Set backend.type to at_modem in config/sms.yaml and pass the modem's
+  # serial port through below. With dry_run it writes to /data/sms instead.
+  sms:
+    build:
+      context: ./edge
+      dockerfile: sms/Dockerfile.arm64
+    container_name: gen318-sms
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - SMS_CONFIG_PATH=/config/sms.yaml
+      - SMS_DB_PATH=/data/sms/sms.db
+    volumes:
+      - sms_data:/data/sms
+      - ./config/sms.yaml:/config/sms.yaml:ro
+    # devices:
+    #   - /dev/ttyUSB2:/dev/ttyUSB2
+    restart: always
+    mem_limit: 64m
+    cpus: 0.25
+
+  api:
+    build:
+      context: ./edge
+      dockerfile: api/Dockerfile.arm64
+    container_name: gen318-api
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - SQLITE_PATH=/data/gen318.db
+      - SQLITE_ENCRYPTION_KEY=${SQLITE_ENCRYPTION_KEY}
+      - STORAGE_TARGET_DAYS=${STORAGE_TARGET_DAYS:-30}
+      - STORAGE_EXPECTED_ASSETS=${STORAGE_EXPECTED_ASSETS:-10}
+      - STORAGE_METRICS_PER_ASSET=${STORAGE_METRICS_PER_ASSET:-40}
+      - STORAGE_BYTES_PER_MEASUREMENT=${STORAGE_BYTES_PER_MEASUREMENT:-160}
+      - STORAGE_RESERVE_BYTES=${STORAGE_RESERVE_BYTES:-2147483648}
+      - STORAGE_WARNING_USED_PCT=${STORAGE_WARNING_USED_PCT:-80}
+      - STORAGE_CRITICAL_USED_PCT=${STORAGE_CRITICAL_USED_PCT:-90}
+      - STORAGE_EMERGENCY_USED_PCT=${STORAGE_EMERGENCY_USED_PCT:-96}
+      - DEVICE_ID=${DEVICE_ID}
+    volumes:
+      - collector_data:/data:ro
+      - inference_models:/models:ro
+      - sms_data:/data/sms:ro
+    restart: always
+    mem_limit: 128m
+    cpus: 0.5
+    # RAM budget: ~80 MB (FastAPI + uvicorn, single worker)
+
+  watchdog:
+    build:
+      context: ./edge
+      dockerfile: watchdog/Dockerfile.arm64
+    container_name: gen318-watchdog
+    privileged: true
+    environment:
+      - CHECK_INTERVAL=60
+      - CONTAINERS=gen318-mqtt,gen318-collector,gen318-inference,gen318-sync,gen318-sms,gen318-api
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - TAMPER_GPIO_PIN=17
+      - CLOUD_API_URL=${CLOUD_API_URL:-}
+      - DEVICE_ID=${DEVICE_ID}
+      - DEVICE_CERT_PATH=/certs/device.pem
+      - DEVICE_KEY_PATH=/certs/device.key
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./certs:/certs:ro
+      - edge_metrics:/data/metrics
+    restart: always
+    mem_limit: 32m
+    cpus: 0.25
+    # RAM budget: ~20 MB
+
+volumes:
+  mosquitto_data:
+  sms_data:
+  collector_data:
+  inference_models:
+  edge_metrics:

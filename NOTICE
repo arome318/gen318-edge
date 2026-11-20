@@ -1,0 +1,17 @@
+Gen318 Edge
+Copyright 2026 Abraham Arome Onoja and the Gen318 Edge contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party runtime dependencies (installed separately, not bundled):
+  fastapi (MIT), uvicorn (BSD-3-Clause), httpx (BSD-3-Clause),
+  cryptography (Apache-2.0 OR BSD-3-Clause), paho-mqtt (EPL-2.0 OR BSD-3-Clause),
+  aiomqtt (BSD), numpy (BSD-3-Clause and others), psutil (BSD-3-Clause),
+  docker (Apache-2.0), PyYAML (MIT), structlog (MIT OR Apache-2.0),
+  pymodbus (BSD-3-Clause), pyserial (BSD), python-can (LGPL-3.0-only, used as
+  an unmodified library), xgboost (Apache-2.0), sqlcipher3 (see its package).
+
+Vendor register maps in edge/collector/adapters/vendor_maps/ record register
+addresses from vendor documentation and public projects, which are cited in
+each file. Some cited projects are GPL-3.0; their register tables were read
+for reference and no code was copied.

@@ -1,0 +1,72 @@
+# Sungrow SG-series string inverters (no battery) — local Modbus.
+#
+# A SEPARATE FILE from sungrow_sh.yaml on purpose. The SH hybrids and the SG
+# string inverters share a vendor and almost nothing else: different register
+# blocks, different assets, and an SG has no battery at all. One map covering
+# both would need half its registers disabled at every site.
+#
+# ADDRESS BASE 1, same as SH: the vendor prints 1-based numbers and every
+# client subtracts one.
+#
+# SOURCES: bohdan-s/SunGather @ 2c2935d7e30002cc16c5f285c6f55c9642984e99
+# (GPL-3.0, registers-sungrow.yaml) and bohdan-s/SungrowClient @ 6f184cd4
+# (SungrowClient.py:113 does the -1). Read 18 September 2026.
+# Full ledger: docs/vendor-integrations/SOURCES.md.
+#
+# NOT VALIDATED ON HARDWARE. verification: community.
+
+vendor: sungrow
+model_family: SG string inverter
+source: >-
+  bohdan-s/SunGather registers-sungrow.yaml @2c2935d7 (GPL-3.0) and
+  SungrowClient.py @6f184cd4 for the address convention; read 2026-09-18
+verification: community
+notes: >-
+  String inverter: no battery role and no battery registers. Grid frequency
+  has two candidate registers and the sources disagree about which is
+  canonical — see the note on that line.
+
+protocol_defaults:
+  protocol: tcp
+  port: 502
+  unit_id: 1
+  function_code: 4
+  address_base: 1         # src: SungrowClient.py:113 "register['address'] -1"
+  max_gap: 8
+  request_spacing_ms: 20
+
+identity:
+  device_type: {address: 5001, type: uint16}   # src: registers-sungrow.yaml (HA 5000)
+
+assets: [inverter, solar_array]
+
+groups:
+  - name: power
+    poll_interval_seconds: 30
+    registers:
+      - {id: inv_temp, metric: inverter.temperature_c, address: 5008, type: int16, scale: 0.1, asset: inverter}   # src: registers-sungrow.yaml (HA 5007)
+      - {id: pv_w, metric: solar.pv_power_w, address: 5017, type: uint32_le, asset: solar_array}   # src: vendor integrations spec section 7 (5017-5018 total DC power); SunGather register list
+      - {id: inv_w, metric: inverter.ac_output_power_w, address: 5031, type: int32_le, asset: inverter}   # src: spec section 7 (5031-5032 active power); SunGather register list
+      - {id: grid_hz, metric: grid.frequency_hz, address: 5036, type: uint16, scale: 0.1, asset: inverter,   # src: SunGather registers-sungrow.yaml:379
+         enabled: false,
+         notes: "DISABLED and UNVERIFIED — bench required. Two sources disagree
+                 about which register is canonical: SunGather uses 5036 at
+                 0.1 Hz, another implementation uses 5148 at 0.01 Hz and says
+                 the vendor documents both as the same value at different
+                 resolutions. Beyond that, grid.* belongs on a grid_connection
+                 asset and an SG string inverter has none, so enabling this
+                 needs both the register question settled and an asset to put
+                 it on"}
+      - {id: phase_a_v, metric: inverter.ac_output_l1_voltage_v, address: 5019, type: uint16, scale: 0.1, asset: inverter}   # src: registers-sungrow.yaml (HA 5018)
+      - {id: phase_b_v, metric: inverter.ac_output_l2_voltage_v, address: 5020, type: uint16, scale: 0.1, asset: inverter}   # src: registers-sungrow.yaml (HA 5019)
+      - {id: phase_c_v, metric: inverter.ac_output_l3_voltage_v, address: 5021, type: uint16, scale: 0.1, asset: inverter}   # src: registers-sungrow.yaml (HA 5020)
+      # Per-phase CURRENT is deliberately absent: SunGather marks those
+      # registers S16 with the inline comment "Documentation says Unsigned, but
+      # seems to be returning Signed 16bit" — a doc-versus-observed conflict
+      # the sources do not settle.
+
+  - name: energy
+    poll_interval_seconds: 300
+    registers:
+      - {id: pv_today_kwh, metric: solar.daily_yield_kwh, address: 5003, type: uint16, scale: 0.1, asset: solar_array}   # src: registers-sungrow.yaml (HA 5002)
+      - {id: pv_total_kwh, metric: solar.total_yield_kwh, address: 5004, type: uint32_le, scale: 0.1, asset: solar_array}   # src: registers-sungrow.yaml (HA 5003), swap: word

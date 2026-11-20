@@ -1,0 +1,135 @@
+# Deep Sea Electronics GenComm — DSE7320 MKII / DSE8610 MKII genset controller.
+#
+# Reading the controller gives device-read kW, run hours, fuel level and kWh.
+# Today the platform sources genset telemetry only through Victron's register
+# 823, which is a relay/AC-input inference rather than the engine's own view.
+#
+# SOURCES (full ledger: docs/vendor-integrations/SOURCES.md)
+#   S1 = victronenergy/dbus-modbus-client dse.py @ fe12d8c9c30fab4310e16c10bbec0ced4ca9926f (GPL-3.0; read, not copied)
+#   S5 = Senquip APN0029 Rev 1.0, "Modbus Integration with a Deep Sea Engine Controller"
+#   S7 = DSE "DSE7310 GENCOMM", doc SP-228 REV A — DSE's own register specification,
+#        publicly mirrored by a dealer. DSE does not publish it directly.
+#   Read 18 September 2026. Where S1 and S7 both cover a register they agree.
+#
+# ADDRESSING: page x 256 + offset, 0-based on the wire.
+# WORD ORDER: 32-bit values are BIG-ENDIAN (high word at the LOWER address) —
+# the opposite of Deye, and the single most likely transcription error here.
+#
+# THE SENTINEL CONVENTION IS LOAD-BEARING. DSE writes a reserved value rather
+# than omitting a reading: 0xFFFF unimplemented, 0xFFFE over range, 0xFFFD
+# under range, 0xFFFC transducer fault, 0xFFFB bad data, 0xFFFA high digital
+# input, 0xFFF9 low digital input, 0xFFF8 reserved (and the signed and 32-bit
+# equivalents). Every register below declares them. Without that, a controller
+# with no oil-pressure sender publishes 65535 kPa as a measurement.
+#
+# THREE CORRECTIONS TO THE SPEC, from DSE's own document:
+#   - 1808 is a 32-bit PAIR (1808-1809), not a single register.
+#   - 1052-1057 and 1536-1537 are WATTS, not kW. Scaling them as kW would
+#     report a 250 kVA set as a quarter of a megawatt.
+#   - 1558 is scale 0.1, and S7 marks it a 61xx MkII allocation.
+#
+# NOT VALIDATED ON HARDWARE. verification: community; gate G1 is open.
+
+vendor: deep_sea_electronics
+model_family: GenComm (7xxx/8xxx MkII)
+source: >-
+  victronenergy/dbus-modbus-client dse.py @fe12d8c9; Senquip APN0029 Rev 1.0;
+  DSE SP-228 REV A "DSE7310 GENCOMM" (dealer mirror); read 2026-09-18
+verification: community
+notes: >-
+  Community transcription from three agreeing public sources. Baud and slave
+  id vary by installation, the 1558 load percentage is a 61xx MkII allocation,
+  and per-family alarm bit layouts are deliberately not transcribed.
+
+protocol_defaults:
+  protocol: rtu
+  baudrate: 115200        # src: S5 (DSE8610 MKII, 115200 8N1); S1 probes 19200 and 115200 — try both
+  parity: N
+  stopbits: 1
+  bytesize: 8
+  unit_id: 10             # src: S5 uses slave 10; S1 probes unit 1 or 10
+  function_code: 3
+  address_base: 0         # src: S1 reads page*256+offset directly
+  max_gap: 8
+  request_spacing_ms: 0
+
+identity:
+  # Engine operating state read once at start-up alongside telemetry, so a
+  # validation record says what the set was doing when it was swept.
+  control_mode_at_start: {address: 772, type: uint16, na: [65535]}   # src: S7 page 3 offset 4; S5 documents 65535 = Unimplemented
+
+assets: [diesel_genset]
+
+groups:
+  - name: engine
+    poll_interval_seconds: 30
+    registers:
+      - {id: status, metric: genset.status, address: 1408, type: enum, asset: diesel_genset,   # src: S7 page 5 offset 128 "Engine operating state"; S1 Reg_mapu16
+         values: {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7}, na: [65535],
+         notes: "0-7 are the named states; 8-13 are SAE-reserved, 14 reserved
+                 and 15 'not available' — all decline to emit rather than
+                 publishing a code the map cannot name"}
+
+      - {id: oil_pressure, metric: genset.oil_pressure_kpa, address: 1024, type: uint16,   # src: S7 page 4 offset 0, range 0-10000 kPa; S1 u16; S5 agrees
+         asset: diesel_genset, na: [65535, 65534, 65533, 65532, 65531, 65530, 65529, 65528]}
+      - {id: coolant_temp, metric: genset.coolant_temperature_c, address: 1025, type: int16,   # src: S7 page 4 offset 1, 16 S, range -50..200 degC; S1 s16; S5 agrees
+         asset: diesel_genset, na: [32767, 32766, 32765, 32764, 32763, 32762, 32761, 32760]}
+      - {id: fuel_level, metric: genset.fuel_level_pct, address: 1027, type: uint16,   # src: S7 page 4 offset 3, range 0-130 %; S1 reads it as a Tank subdevice
+         asset: diesel_genset, min: 0, max: 100,
+         na: [65535, 65534, 65533, 65532, 65531, 65530, 65529, 65528],
+         notes: "S7 allows up to 130 %; readings above 100 are kept and flagged
+                 suspect rather than clamped"}
+      - {id: start_battery_v, metric: genset.starting_battery_voltage_v, address: 1029, type: uint16,   # src: S7 page 4 offset 5 "Engine Battery voltage", scale 0.1; S1 divides by 10
+         scale: 0.1, asset: diesel_genset,
+         na: [65535, 65534, 65533, 65532, 65531, 65530, 65529, 65528]}
+
+  - name: electrical
+    poll_interval_seconds: 30
+    registers:
+      - {id: frequency, metric: genset.output_frequency_hz, address: 1031, type: uint16,   # src: S7 page 4 offset 7, scale 0.1, range 0-70 Hz; S1 agrees
+         scale: 0.1, asset: diesel_genset,
+         na: [65535, 65534, 65533, 65532, 65531, 65530, 65529, 65528]}
+      - {id: output_voltage, metric: genset.output_voltage_v, address: 1032, type: uint32,   # src: S7 page 4 offset 8-9, 32-bit BIG-ENDIAN, scale 0.1, range 0-18000 V; S1 Reg_u32b
+         scale: 0.1, asset: diesel_genset,
+         na: [4294967295, 4294967294, 4294967293, 4294967292, 4294967291, 4294967290, 4294967289, 4294967288]}
+      - {id: power_total, metric: genset.power_w, address: 1536, type: int32,   # src: S7 page 6 offset 0-1, 32 S, unit WATTS (not kW); S1 Reg_s32b scale 1
+         asset: diesel_genset,
+         na: [2147483647, 2147483646, 2147483645, 2147483644, 2147483643, 2147483642, 2147483641, 2147483640],
+         notes: "WATTS. Both S1 and S7 say watts; the spec's table called these
+                 kW, which would report a 250 kVA set as a quarter of a megawatt"}
+      - {id: load_pct, metric: genset.load_pct, address: 1558, type: int16,   # src: S7 page 6 offset 22, 16 S, scale 0.1, range +/-999.9 % (61xx MkII allocation)
+         scale: 0.1, asset: diesel_genset,
+         na: [32767, 32766, 32765, 32764, 32763, 32762, 32761, 32760],
+         notes: "UNVERIFIED — bench required: S7 marks this a 61xx MkII
+                 allocation and S1 carries its own 'might only work for...'
+                 comment. Confirm against the controller's own display before
+                 the number is used"}
+
+  - name: counters
+    poll_interval_seconds: 300
+    registers:
+      - {id: runtime, metric: genset.runtime_hours, address: 1798, type: uint32,   # src: S7 page 7 offset 6-7 "Engine run time" in SECONDS, 32-bit BE; S1 Reg_u32b
+         scale: 0.0002777777777777778, asset: diesel_genset,
+         na: [4294967295, 4294967294, 4294967293, 4294967292, 4294967291, 4294967290, 4294967289, 4294967288],
+         notes: "the register is SECONDS; scale converts to hours (1/3600).
+                 S1's dbus path is named OperatingHours but its own format
+                 string prints seconds"}
+      - {id: energy, metric: genset.energy_kwh, address: 1800, type: uint32,   # src: S7 page 7 offset 8-9 "Generator positive KW hours", scale 0.1; S1 divides by 10
+         scale: 0.1, asset: diesel_genset,
+         na: [4294967295, 4294967294, 4294967293, 4294967292, 4294967291, 4294967290, 4294967289, 4294967288],
+         notes: "the POSITIVE (forward) energy counter, not a net figure.
+                 Electrical output — never on its own evidence of fuel burned"}
+      - {id: starts, metric: genset.starts, address: 1808, type: uint32,   # src: S7 page 7 offset 16-17, 32-bit, range 0-99999; S1 Reg_u32b over 1808-1809
+         asset: diesel_genset,
+         na: [4294967295, 4294967294, 4294967293, 4294967292, 4294967291, 4294967290, 4294967289, 4294967288],
+         notes: "a 32-bit PAIR (1808-1809). The spec listed 1808 alone"}
+
+# Deliberately absent:
+#   - genset.fuel_flow_lph / fuel_consumed_l. Not in GenComm; it is ECU
+#     dependent. Never derived from load percentage.
+#   - per-phase power (1052-1057). The registers are well sourced, but the
+#     genset namespace has no per-phase metric and inventing one to hold them
+#     is a catalogue change, not a map change.
+#   - alarm pages. The bases are known (2049 old-style, 39425 named-style) but
+#     the per-family bit layouts are not, and a guessed alarm is worse than no
+#     alarm. The validation probe can sweep them for a bench session.

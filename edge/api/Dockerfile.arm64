@@ -1,0 +1,28 @@
+FROM python:3.12-slim-bookworm
+
+# Platform: linux/arm64
+LABEL maintainer="Gen318 <eng@gen318.io>"
+LABEL description="Gen318 Edge API — local web UI on port 8080"
+
+WORKDIR /app
+
+# Install system dependencies for sqlcipher
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libsqlcipher-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy common modules and service code
+COPY common/ /app/common/
+COPY api/ /app/api/
+COPY sms/ /app/sms/
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+EXPOSE 8080
+
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]

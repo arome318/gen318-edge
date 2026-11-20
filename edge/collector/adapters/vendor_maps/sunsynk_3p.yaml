@@ -1,0 +1,25 @@
+# SunSynk three-phase hybrid — the same hardware as the Deye LV map.
+#
+# SunSynk three-phase units are rebadged Deye and speak the identical
+# register map; the only thing that differs is the badge, which matters for
+# identity and reporting. This file exists for completeness rather than
+# because a Nigerian prospect has asked: SunSynk's own distributor page
+# mentions Nigeria zero times against 54 for South Africa.
+#
+# Inherits everything from deye_sg04lp3 (explicit `extends:`, plan decision 5)
+# and changes only the vendor name. Every register, source pin and open
+# question in that file applies here unchanged — including the unconfirmed
+# sign directions and the load-versus-backup-load question.
+
+extends: deye_sg04lp3
+
+vendor: sunsynk
+model_family: three-phase hybrid (Deye SG04LP3 equivalent)
+source: >-
+  identical hardware to deye_sg04lp3; see that map's pinned sources
+  (kellerza/sunsynk @0cd3dc58 + @c548e67a, kbialek @82fe0f57). read 2026-09-18
+verification: community
+notes: >-
+  Alias of the Deye LV map with the vendor renamed. Nothing about SunSynk
+  hardware has been read on a unit; the alias inherits the Deye map's open
+  bench questions in full.

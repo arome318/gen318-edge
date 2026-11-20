@@ -1,0 +1,81 @@
+# Sungrow SH-series residential/small-C&I hybrids — local Modbus.
+#
+# ADDRESS BASE 1. Sungrow's own protocol document numbers registers 1-based
+# and says to subtract one before the wire read; every open-source client does
+# exactly that. The addresses below are transcribed AS THE VENDOR PRINTS THEM
+# and the engine subtracts the base once. Getting this backwards shifts the
+# whole map by one register, which decodes cleanly and reports nonsense.
+#
+# This is the opposite convention from Solis, whose printed numbers already
+# are wire addresses. Address base is a per-vendor fact, not a Modbus rule.
+#
+# SOURCE: mkaiser/Sungrow-SHx-Inverter-Modbus-Home-Assistant
+# @ 310635c6e2c1122f5adb54fba7fdf33a7cb85142 (MIT), modbus_sungrow.yaml —
+# whose own addresses are Home Assistant's 0-based ones, so each entry below
+# is that number plus one. Read 18 September 2026.
+# Full ledger: docs/vendor-integrations/SOURCES.md.
+#
+# WORD ORDER: every 32-bit field is flagged `swap: word` in the source — LOW
+# word first, like Deye and unlike GoodWe.
+#
+# NOT VALIDATED ON HARDWARE. verification: community.
+
+vendor: sungrow
+model_family: SH hybrid
+source: >-
+  mkaiser/Sungrow-SHx-Inverter-Modbus-Home-Assistant modbus_sungrow.yaml
+  @310635c6 (MIT); addresses converted from its 0-based form to the vendor's
+  1-based printing; read 2026-09-18
+verification: community
+notes: >-
+  WiNet-S/S2 dongle path needs Modbus TCP opened in the iSolarCloud app and
+  the IP whitelist off or the Pi whitelisted, with firmware at least
+  P027.B002 (WiNet-S) or P014.B001 (WiNet-S2). The dongle is slow and
+  restricts some registers compared with the inverter's own LAN port.
+
+protocol_defaults:
+  protocol: tcp
+  port: 502
+  unit_id: 1
+  function_code: 4        # src: the source reads input registers
+  address_base: 1         # src: Sungrow's protocol text; every client subtracts 1
+  max_gap: 8
+  # WiNet-S needs at least 20 ms between requests.
+  request_spacing_ms: 20
+
+identity:
+  device_type: {address: 5001, type: uint16}   # src: modbus_sungrow.yaml line 121-131 (HA 5000)
+
+assets: [inverter, battery, solar_array, grid_connection]
+
+groups:
+  - name: power
+    poll_interval_seconds: 30
+    registers:
+      - {id: inv_temp, metric: inverter.temperature_c, address: 5008, type: int16, scale: 0.1, asset: inverter}   # src: modbus_sungrow.yaml line 160-171 (HA 5007)
+      - {id: pv1_v, metric: solar.mppt1_voltage_v, address: 5011, type: uint16, scale: 0.1, asset: solar_array}   # src: line 173-197 (HA 5010)
+      - {id: pv1_a, metric: solar.mppt1_current_a, address: 5012, type: uint16, scale: 0.1, asset: solar_array}   # src: line 173-197 (HA 5011)
+      - {id: pv2_v, metric: solar.mppt2_voltage_v, address: 5013, type: uint16, scale: 0.1, asset: solar_array}   # src: line 199-223 (HA 5012)
+      - {id: pv2_a, metric: solar.mppt2_current_a, address: 5014, type: uint16, scale: 0.1, asset: solar_array}   # src: line 199-223 (HA 5013)
+      - {id: grid_l1_v, metric: meter.l1_voltage_v, address: 5019, type: uint16, scale: 0.1, asset: grid_connection}   # src: line 273-310 (HA 5018)
+      - {id: grid_l2_v, metric: meter.l2_voltage_v, address: 5020, type: uint16, scale: 0.1, asset: grid_connection}   # src: line 273-310 (HA 5019)
+      - {id: grid_l3_v, metric: meter.l3_voltage_v, address: 5021, type: uint16, scale: 0.1, asset: grid_connection}   # src: line 273-310 (HA 5020)
+      - {id: grid_w, metric: grid.export_power_w, address: 13010, type: int32_le,   # src: line 793-807 (HA 13009), "+export / -import"
+         asset: grid_connection, split_negative_to: grid.import_power_w,
+         notes: "the source names this 'export power raw' with positive meaning
+                 EXPORT — the opposite polarity from the Deye and GoodWe maps,
+                 which is why the split is declared the other way round here.
+                 UNVERIFIED — bench required"}
+      # battery.power_w is deliberately ABSENT. The source COMMENTS OUT its own
+      # battery power and battery current sensors (13021/13020) and notes that
+      # the sign convention CHANGED with the October 2024 firmware — always
+      # positive before, signed after. A register whose meaning depends on
+      # firmware nobody has read off this unit is not a measurement.
+
+  - name: energy
+    poll_interval_seconds: 300
+    registers:
+      - {id: pv_today_kwh, metric: solar.daily_yield_kwh, address: 13002, type: uint16, scale: 0.1, asset: solar_array}   # src: line 724-735 (HA 13001)
+      - {id: pv_total_kwh, metric: solar.total_yield_kwh, address: 13003, type: uint32_le, scale: 0.1, asset: solar_array}   # src: line 737-749 (HA 13002)
+      - {id: bat_charge_kwh, metric: battery.charge_energy_kwh, address: 13013, type: uint32_le, scale: 0.1, asset: battery}   # src: line 822-834 (HA 13012), total battery charge from PV
+      - {id: bat_discharge_kwh, metric: battery.discharge_energy_kwh, address: 13027, type: uint32_le, scale: 0.1, asset: battery}   # src: line 964-976 (HA 13026)

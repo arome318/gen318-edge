@@ -1,0 +1,31 @@
+FROM python:3.12-slim-bookworm
+
+# Platform: linux/arm64
+LABEL maintainer="Gen318 <eng@gen318.io>"
+LABEL description="Gen318 Edge Collector — polls hardware adapters, stores to SQLite"
+
+WORKDIR /app
+
+# System dependencies.
+#   libsqlcipher-dev — encrypted local database
+#   iproute2         — the CAN listener verifies that the interface is in
+#                      listen-only mode by reading `ip -details link show`
+#                      before it opens the bus. Without `ip` present it cannot
+#                      confirm that and refuses to start, which is correct but
+#                      leaves the adapter permanently dead on every node.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libsqlcipher-dev iproute2 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy common modules and service code
+COPY common/ /app/common/
+COPY collector/ /app/collector/
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+CMD ["python", "-m", "collector.main"]

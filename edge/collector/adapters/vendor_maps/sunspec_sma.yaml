@@ -1,0 +1,39 @@
+# SMA Sunny Boy / Sunny Tripower — SunSpec TCP preset.
+#
+# Not a register map: the SunSpec adapter discovers the model chain itself.
+# This file carries only the connection facts an installer would otherwise
+# have to look up, and the exclusions that stop it being pointed at hardware
+# it cannot read.
+#
+# SOURCES: SMA Modbus technical information (files.sma.de) for the unit ID and
+# port; the model list is from a third-party mirror and is marked as such.
+# SunSpec model definitions: github.com/sunspec/models @ 90b4a331 (Apache-2.0).
+# Read 18 September 2026. Full ledger: docs/vendor-integrations/SOURCES.md.
+
+kind: sunspec_preset
+vendor: sma
+model_family: Sunny Boy / Sunny Tripower
+source: >-
+  SMA Modbus technical information (files.sma.de) for unit ID 126 and port 502;
+  model list via a third-party mirror (not re-verified against SMA); read 2026-09-18
+verification: community
+adapter: sunspec_modbus
+
+connection:
+  protocol: tcp
+  port: 502
+  # 126 = SMA profile id 3 + 123. Confirmed in SMA's own PDF.
+  unit_id: 126
+  base_addresses: [40000, 0, 50000]
+
+notes: >-
+  The Modbus TCP server is DISABLED by default on SMA inverters; enable it in
+  the inverter web UI (Sunny Explorer, or Device administration on ennexOS)
+  before onboarding. Discovery at unit 1 register 42109 returns serial and
+  SusyID if the unit id needs confirming.
+
+exclusions: >-
+  Sunny Island is NOT covered. Users report it does not present a SunSpec map,
+  and the SMA Modbus profile it does present (unit 3, e.g. 30845 SOC, 30843
+  battery current) would be a generic_modbus vendor map, not this preset. No
+  such map is shipped, because no source for it was read.

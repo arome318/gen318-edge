@@ -1,0 +1,25 @@
+FROM python:3.12-slim-bookworm
+
+# Platform: linux/arm64
+LABEL maintainer="Gen318 <eng@gen318.io>"
+LABEL description="Gen318 Edge Watchdog — container health + tamper detection"
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libsqlcipher-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy common modules and service code
+COPY common/ /app/common/
+COPY watchdog/ /app/watchdog/
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+CMD ["python", "-m", "watchdog.main"]

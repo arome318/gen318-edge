@@ -1,0 +1,203 @@
+# SRNE HF/HES-series energy-storage (hybrid) inverter — Modbus RTU.
+#
+# SRNE is one of the highest-volume inverter cores sold into Nigeria, almost
+# always under someone else's badge. The same board ships as Felicity-adjacent
+# house brands, as PowMr and Sako hybrids, and under a dozen importer labels.
+# Reading it locally is the only way to tell what the box is actually doing.
+#
+# SOURCES (full ledger: docs/vendor-integrations/SOURCES.md)
+#   R1 = RAR "esphome-srne-inverter" — REGISTER_MAP.md + srne_inverter.cpp.
+#        A scan-validated community map, written against real hardware.
+#   R2 = phinix-org — a plaintext transcription of SRNE's own document,
+#        "SRNE Solar MODBUS Protocol for Energy Storage Inverter V2.08,
+#        2025.05.26", plus its fault-code CSV.
+#   R3 = Gizzo/ESPHome_HF2430U60 — a third community YAML, used only as a
+#        cross-check on addresses.
+#   Read 19 September 2026.
+#
+# ADDRESSING: the printed register number goes straight onto the wire. All
+# three sources pass the documented address to Modbus with NO -1 adjustment,
+# and R1's frame builder does no offset arithmetic at all.
+#
+# FOUR THINGS ARE DELIBERATELY NOT READ. Each is a place where the sources
+# contradict each other on something that changes the number's meaning, so a
+# transcription would publish a confidently wrong reading:
+#
+#   0x0102 battery current. SRNE's own table says "current greater than 0
+#     indicates discharging"; R1's decoder says "negative = discharge". Those
+#     are opposite. A charging pack would report as discharging on half the
+#     fleet. R3's charge-controller code uses a third scale (0.01, not 0.1).
+#
+#   0xF038 / 0xF03A / 0xF046 / 0xF048 / 0xF050 / 0xF052 cumulative energy.
+#     R2 reads 0xF038 as a 32-bit value spanning two registers, LOW WORD
+#     FIRST. R3 reads the same address as a single 16-bit register. Both cite
+#     the same manual. Bit width AND word order are in dispute, and a wrong
+#     answer on either does not look wrong: it looks like a plausible kWh
+#     total. Today's counters at 0xF02F are 16-bit and agreed, so daily yield
+#     is read and lifetime yield is not.
+#
+#   0x010B charge state. R1 decodes 3 as "Boost"; SRNE's table has no value 3
+#     at all and adds 8 = "Full", which R1 would print as unknown.
+#
+#   0x0210 machine state. SRNE's table carries TWO different enumerations for
+#     this one register — an 11-state list, and a 4-state list for split-phase
+#     all-in-one and European single-phase 8-12K machines. On the second kind
+#     of machine the first table's code 3 ("soft start") is really "inverter
+#     operation". Nothing in the map can tell the two apart, so no state is
+#     published rather than a wrong one.
+#
+# SENTINELS: SRNE has no in-band not-implemented value. Its documented failure
+# mode is silence — a read of an unpopulated range either times out with no
+# frame at all, or returns Modbus exception 0x02. Single-MPPT models reject
+# any read spanning the PV2 registers, which is why PV2 sits behind a feature
+# flag rather than being read unconditionally.
+#
+# NOT VALIDATED ON HARDWARE. verification: community.
+
+vendor: srne
+model_family: HF/HES energy-storage inverter
+source: >-
+  RAR esphome-srne-inverter REGISTER_MAP.md + srne_inverter.cpp; phinix-org
+  transcription of "SRNE Solar MODBUS Protocol for Energy Storage Inverter
+  V2.08, 2025.05.26" + fault-code CSV; Gizzo/ESPHome_HF2430U60 yaml as an
+  address cross-check; read 2026-09-19
+verification: community
+notes: >-
+  Community transcription, simulator-exercised only. Battery current, lifetime
+  energy counters, charge state and machine state are deliberately absent —
+  the sources contradict each other on each, and the header says how. PV2 is
+  behind a feature flag because single-MPPT models reject reads that span it.
+
+protocol_defaults:
+  protocol: rtu
+  baudrate: 9600          # src: R1, R2 ("9,600, n, 8, 1") and R3 all agree
+  parity: N               # src: R2 states 8N1 explicitly
+  stopbits: 1             # src: R2
+  bytesize: 8             # src: R2
+  unit_id: 1              # src: R2 "the default address of the inverter is 1, which can be set"
+  function_code: 3        # src: all three sources read holding registers; none uses 0x04
+  address_base: 0         # src: R1 frame builder does no offset arithmetic
+  max_gap: 8
+  max_block_words: 32     # src: R2 — the protocol caps a request at 0x20 registers
+  request_spacing_ms: 0
+
+# Read once at start-up and shipped as tier-3 evidence, never as telemetry.
+identity:
+  machine_type: {address: 11, type: uint16}            # src: R2 000B MachType (03 grid-tie, 04 all-in-one, 05 power-frequency off-grid)
+  cpu1_version: {address: 20, type: uint16}            # src: R1 decode_block_d_; R2 0014 SoftWareVersion (100 reads as v1.00)
+  hardware_version: {address: 22, type: uint16}        # src: R1; R2 0016 HardWareVersion
+  rs485_address: {address: 26, type: uint16}           # src: R2 001A Rs485Addr
+  serial: {address: 53, type: string, words: 20}       # src: R1 extract_low_byte_string_; R2 0035 ProductSNStr
+  # R2: "string format, with the low bytes of each register valid and the high
+  # bytes invalid". The decoder reads both bytes and strips NULs, so a unit
+  # that zeroes its high bytes reads cleanly and one that does not carries
+  # interleaved noise. Evidence only, and the raw words travel with it.
+
+assets: [inverter, battery, solar_array, grid_connection]
+optional_assets: [load]
+
+features:
+  # Single-MPPT models (HSI-1500S and siblings) do not implement the PV2
+  # registers and reject any read that spans them with exception 0x02 — which
+  # would take the whole block down, not just PV2. Off unless the site says
+  # the unit has two trackers.
+  pv2: false
+
+groups:
+  - name: power
+    poll_interval_seconds: 30
+    registers:
+      # ── Battery ─────────────────────────────────────────────
+      - {id: bat_soc, metric: battery.soc_pct, address: 256, type: uint16, asset: battery,   # src: R1 REGISTER_MAP 0x0100; R2 "0100 1 BatSoc"; R3 agrees
+         min: 0, max: 100}
+      - {id: bat_v, metric: battery.voltage_v, address: 257, type: uint16, scale: 0.1,   # src: R1 0x0101; R2 "0101 1 BatVolt 0.1 V"
+         asset: battery}
+      - {id: bat_temp, metric: battery.temperature_c, address: 259, type: int16, scale: 0.1,   # src: R2 "0103 1 DeviceBatTemper"
+         asset: battery, min: -40, max: 100,
+         notes: "UNVERIFIED — bench required; R2 only. R1 does not decode this
+                 register and reads pack temperature from the BMS block"}
+
+      # ── Solar ───────────────────────────────────────────────
+      - {id: pv1_v, metric: solar.mppt1_voltage_v, address: 263, type: uint16, scale: 0.1,   # src: R1 0x0107; R2 "0107 1 Pv1Volt"
+         asset: solar_array}
+      - {id: pv1_a, metric: solar.mppt1_current_a, address: 264, type: uint16, scale: 0.1,   # src: R1 0x0108; R2 "0108 1 Pv1Curr"; R3 address: 0x0108
+         asset: solar_array}
+      - {id: pv1_w, metric: solar.mppt1_power_w, address: 265, type: uint16, asset: solar_array}   # src: R1 0x0109; R2 "0109 1 Pv1ChargePower"; R3 address: 0x0109
+
+      - {id: pv2_v, metric: solar.mppt2_voltage_v, address: 271, type: uint16, scale: 0.1,   # src: R1 0x010F; R2 "010F 1 Pv2Volt"
+         asset: solar_array, feature: pv2}
+      - {id: pv2_a, metric: solar.mppt2_current_a, address: 272, type: uint16, scale: 0.1,   # src: R1 0x0110; R2 "0110 1 Pv2Curr"
+         asset: solar_array, feature: pv2}
+      - {id: pv2_w, metric: solar.mppt2_power_w, address: 273, type: uint16,   # src: R1 0x0111; R2 "0111 1 Pv2ChargePower"
+         asset: solar_array, feature: pv2}
+
+      # Array total is DERIVED, not read. R2 documents a real total register
+      # at 0x010A, but only R2 has it — R1 sums the trackers in software and
+      # never reads 0x010A. Summing what both sources agree on beats reading a
+      # single-sourced register. On a single-MPPT unit the sum needs pv2,
+      # which the feature flag drops, so this drops with it.
+      - {id: pv_w, metric: solar.pv_power_w, derived: sum, of: [pv1_w, pv2_w],
+         asset: solar_array, feature: pv2}
+
+      - {id: charge_w, metric: battery.power_w, address: 270, type: uint16, asset: battery,   # src: R1 0x010E charge_power; R2 "010E 1 ChargePower"; R3 address: 0x010E
+         notes: "UNVERIFIED — bench required. This is the COMBINED charge power
+                 (PV plus AC), unsigned, so it reads 0 while discharging rather
+                 than going negative. It is charge-only, not a signed battery
+                 power. Confirm against the unit's own display before the sign
+                 convention is assumed"}
+
+      # ── Grid (the inverter's AC input) ──────────────────────
+      - {id: grid_v, metric: grid.voltage_v, address: 531, type: uint16, scale: 0.1,   # src: R1 grid_voltage 0x0213; R2 "0213 1 GridVoltA"; R3 address: 0x0213
+         asset: grid_connection}
+      - {id: grid_hz, metric: grid.frequency_hz, address: 533, type: uint16, scale: 0.01,   # src: R1 grid_frequency 0x0215; R2 "0215 1 GridFreq"; R3 address: 0x0215
+         asset: grid_connection}
+      - {id: grid_a, metric: inverter.ac_input_current_a, address: 532, type: uint16, scale: 0.1,   # src: R1 grid_current 0x0214; R2 "0214 1 GridCurrA"
+         asset: inverter}
+
+      # ── Inverter AC output ──────────────────────────────────
+      - {id: inv_v, metric: inverter.ac_output_voltage_v, address: 534, type: uint16, scale: 0.1,   # src: R1 inverter_voltage 0x0216; R2 "0216 1 InvVoltA"; R3 address: 0x0216
+         asset: inverter}
+      - {id: inv_a, metric: inverter.ac_output_current_a, address: 535, type: uint16, scale: 0.1,   # src: R1 inverter_current 0x0217; R2 "0217 1 InvCurrA"
+         asset: inverter}
+      - {id: inv_hz, metric: inverter.ac_output_freq_hz, address: 536, type: uint16, scale: 0.01,   # src: R1 inverter_frequency 0x0218; R2 "0218 1 InvFreq"; R3 address: 0x0218
+         asset: inverter}
+      - {id: inv_temp, metric: inverter.temperature_c, address: 545, type: int16, scale: 0.1,   # src: R1 heatsink_b_temperature 0x0221 (DC-AC stage); R2 "0221 1 Temperb"
+         asset: inverter, min: -40, max: 150,
+         notes: "UNVERIFIED — bench required. The unit has three heatsink
+                 sensors (0x0220 DC-DC, 0x0221 DC-AC, 0x0222 transformer).
+                 Only one can be inverter.temperature_c without colliding on
+                 the measurements key, and the DC-AC stage is the choice. That
+                 selection is a judgement, not something a source states"}
+
+      # ── Load ────────────────────────────────────────────────
+      - {id: load_w, metric: load.power_w, address: 539, type: uint16, asset: load,   # src: R1 load_active_power 0x021B; R2 "021B 1 LoadActivePowerA"; R3 address: 0x021B
+         notes: "phase A active power. On a three-phase machine the L2/L3 legs
+                 sit at 0x022A onward and are NOT read — R1 reports those slots
+                 stay zero on the split-phase hardware it was written against,
+                 so a transcription would publish zeros as real readings"}
+
+  - name: counters
+    poll_interval_seconds: 300
+    registers:
+      - {id: pv_today_kwh, metric: solar.daily_yield_kwh, address: 61487, type: uint16, scale: 0.1,   # src: R2 "F02F 1 GeneratEnergyToday"; R3 address: 0xF02F "Power Generation of the day"
+         asset: solar_array,
+         notes: "today's figure only. The lifetime counters at 0xF038 onward
+                 are not read: R2 and R3 disagree on whether they are 16-bit
+                 or 32-bit, and R2's 32-bit reading is low-word-first while
+                 SRNE's charge-controller family is high-word-first"}
+
+  - name: faults
+    # Its own group, and slow. R1 records that some firmware answers a read of
+    # this range with silence rather than a Modbus error, which costs the
+    # request's full timeout. Isolating it keeps that cost off the 30-second
+    # telemetry path.
+    poll_interval_seconds: 300
+    registers:
+      - {id: fault_code, metric: inverter.error_code, address: 516, type: uint16, asset: inverter,   # src: R1 Block C 0x0204 CurrFcode; R2 "0204 4 CurrFcode"
+         notes: "the first of four active-fault slots; 0 means no fault in that
+                 slot. Code meanings come from R2's fault CSV (01 BatVoltLow,
+                 03 BatOpen, 12 bLineLoss mains down, 13/14 overload, 21 fan
+                 failure, 22 EEPROM, and the rest). Codes 16 and 18 are absent
+                 from SRNE's own table. UNVERIFIED — bench required: R1 reports
+                 this range is not exposed on some firmware and answers with a
+                 silent timeout rather than an exception"}

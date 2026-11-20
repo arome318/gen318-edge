@@ -1,0 +1,179 @@
+# ATESS HPS-series hybrid inverter (HPS30 / HPS50 / HPS100 / HPS120 / HPS150)
+# — Modbus RTU over RS485.
+#
+# ATESS three-phase hybrids are sold into African mini-grids and C&I sites,
+# usually with lithium banks and a diesel generator on the DG input. Their
+# cloud path is the Shinemaster logger or the ATESS portal; this map is the
+# local path, read by the edge node over the inverter's RS485 port.
+#
+# SOURCES (full ledger: docs/vendor-integrations/SOURCES.md §13)
+#   A1 = ATESS's own document, "ATESS Modbus RTU Communication protocol",
+#        Version V3.22 (revision log 2019-11-01 to 2023-08-07), ATESS Power
+#        Technology Co., Ltd / Sun Shining Co., Ltd, R&D. Re-hosted by the
+#        myGEKKO device library; not on atesspower.com. Read 27 September 2026.
+#        Input registers are §4 (function code 0x04); enumerations are §6.6.
+#   A2 = HPS30-150 user manual, 2020-06-30 — RS485 A/B on the control board,
+#        third-party monitoring must "be compatible with 485 communication
+#        protocol of ATESS". Used for the transport only.
+#   There is NO community transcription to cross-check against: no Home
+#   Assistant, solarman, openHAB or node-red definition exists. Every address
+#   below is single-sourced from A1. That is why the verification tier stays
+#   `community` and every register is bench-required before promotion.
+#
+# ADDRESSING: A1 writes addresses in decimal, 0-based, and passes them to the
+# wire unchanged. Hex values in comments are ours.
+#
+# TRANSPORT: A1 §2.3.1 — "1 start bit, 8 data bits …, No parity bit, 2 stop
+# bits, 11 bits in total". That is 8N2, NOT the usual 8N1. A unit left at
+# 8N1 on the master side often still answers, which is exactly why the
+# default is pinned here rather than left to a technician.
+#
+# SIGN: A1 gives ranges, not types. A register whose documented range goes
+# negative (for example -9999~9999) is read as int16.
+#
+# FOUR THINGS ARE DELIBERATELY NOT READ. Each would decode cleanly and wrongly:
+#
+#   2 battery current, 17 battery power, 19 bypass (grid) active power,
+#     158 inverter active power. All are signed, and A1 states no sign
+#     convention for any of them. Revision V1.5 of A1 deleted an HPS10KTL
+#     "positive = charging" note rather than restating it. A charging bank
+#     reported as discharging, or an export reported as import, looks like a
+#     plausible number. Read on the bench first; add then.
+#
+#   181–188 fault alarm bit words. A1 marks each "16bit, Low byte first",
+#     which contradicts the Modbus big-endian byte order every other register
+#     in the document follows. A byte-swapped bit word names the wrong fault.
+#
+#   Per-phase grid voltage. A1 publishes grid voltage only line-to-line
+#     (13 "Grid bypass voltageUV" onward) and no phase-to-neutral value. UV is
+#     read as grid.voltage_v, the same choice the SmartGen map makes for
+#     "Mains UAB"; it is a line-to-line figure and dashboards must say so.
+#
+#   PCS, PBD and HPS…TL string models. A1 covers them, but PV registers are
+#     marked "all model (Except PCS)" and the TL/PBD PV2 block (105–108) is a
+#     different layout. This file is HPS only; a PCS map needs its own file.
+#
+# NOT VALIDATED ON HARDWARE. verification: community.
+
+vendor: atess
+model_family: HPS30/50/100/120/150 three-phase hybrid inverter
+source: >-
+  ATESS "Modbus RTU Communication protocol" V3.22 (ATESS Power Technology /
+  Sun Shining, R&D; revision log to 2023-08-07), re-hosted by the myGEKKO
+  device library; HPS30-150 user manual 2020-06-30 for the RS485 port;
+  read 2026-09-27
+verification: community
+notes: >-
+  Single-sourced from the vendor's own protocol document; no community
+  implementation exists to cross-check. Signed battery current and power,
+  grid and inverter active power, and the fault bit words are deliberately
+  absent — the header says why. Grid voltage is line-to-line. The generator
+  (DG input) registers sit behind a feature flag.
+
+protocol_defaults:
+  protocol: rtu
+  baudrate: 9600          # src: A1 §2 "2400 or 9600 bps", 9600 the default; settable at holding 246 "485 Baud Rate(bps)"
+  parity: N               # src: A1 §2.3.1 "No parity bit"
+  stopbits: 2             # src: A1 §2.3.1 "2 stop bits, 11 bits in total" — NOT the usual 8N1
+  bytesize: 8             # src: A1 §2.3.1 "8 data bits"
+  unit_id: 1              # src: A1 holding 23 "Communication StationSetting" 1~32. UNVERIFIED — bench required: the factory default is not stated
+  function_code: 4        # src: A1 §4 "Input register（Function code: 0x04）" — telemetry is input registers; 0x03 is settings
+  address_base: 0         # src: A1 addresses are 0-based and printed in decimal
+  max_gap: 8
+  max_block_words: 32     # UNVERIFIED — bench required: A1 states no per-request cap; 32 matches the other maps
+  request_spacing_ms: 0
+
+assets: [inverter, battery, solar_array, grid_connection]
+optional_assets: [load, diesel_genset]
+
+features:
+  # The DG input is only wired where a generator is on site. On a unit with
+  # nothing on DG the registers read zero, which would publish a genset that
+  # never runs. Off unless the site says there is a generator.
+  generator: false
+
+groups:
+  - name: power
+    poll_interval_seconds: 30
+    registers:
+      # ── Solar ───────────────────────────────────────────────
+      # HPS has a single PV input, so PV1 is the array.
+      - {id: pv_v, metric: solar.pv_voltage_v, address: 0, type: int16, scale: 0.1,   # src: A1 §4 "0 PV1 Voltage 2Byte -15000~15000 0.1V", all model (Except PCS)
+         asset: solar_array}
+      - {id: pv_a, metric: solar.pv_current_a, address: 3, type: int16, scale: 0.1,   # src: A1 §4 "3 PV1 DC current 2Byte -9999~9999 0.1A", all model (Except PCS)
+         asset: solar_array}
+      - {id: pv_w, metric: solar.pv_power_w, address: 51, type: uint16, scale: 100,   # src: A1 §4 "51 PV1 power 2Byte 0~9999 0.1kW" (0.1 kW = 100 W)
+         asset: solar_array}
+
+      # ── Battery ─────────────────────────────────────────────
+      - {id: bat_v, metric: battery.voltage_v, address: 1, type: int16, scale: 0.1,   # src: A1 §4 "1 Battery voltage 2Byte -9999~9999 0.1V", all model
+         asset: battery}
+      - {id: bat_soc, metric: battery.soc_pct, address: 47, type: uint16, asset: battery,   # src: A1 §4 "47 Battery percentage 2Byte 0~100 1%"
+         min: 0, max: 100}
+
+      # ── Grid (the inverter's bypass input) ──────────────────
+      - {id: grid_v, metric: grid.voltage_v, address: 13, type: uint16, scale: 0.1,   # src: A1 §4 "13 Grid bypass voltageUV 2Byte 0~65535 0.1V", HPS/PCS/HPSTL
+         asset: grid_connection,
+         notes: "line-to-line U-V, not phase-to-neutral. A1 publishes no
+                 phase voltage for the grid side"}
+      - {id: grid_hz, metric: grid.frequency_hz, address: 21, type: uint16, scale: 0.01,   # src: A1 §4 "21 Grid frequency 2Byte 0~9999 0.01Hz"
+         asset: grid_connection}
+
+      # ── Inverter AC output ──────────────────────────────────
+      - {id: out_l1_v, metric: inverter.ac_output_l1_voltage_v, address: 56, type: uint16, scale: 0.1,   # src: A1 §4 "56 Output voltage U 2Byte 0~9999 0.1V"
+         asset: inverter}
+      - {id: out_l2_v, metric: inverter.ac_output_l2_voltage_v, address: 57, type: uint16, scale: 0.1,   # src: A1 §4 "57 Output voltage V"
+         asset: inverter}
+      - {id: out_l3_v, metric: inverter.ac_output_l3_voltage_v, address: 58, type: uint16, scale: 0.1,   # src: A1 §4 "58 Output voltage W"
+         asset: inverter}
+      - {id: out_hz, metric: inverter.ac_output_freq_hz, address: 16, type: uint16, scale: 0.01,   # src: A1 §4 "16 Output frequency 2Byte 0~9999 0.01Hz"
+         asset: inverter}
+      - {id: inv_temp, metric: inverter.temperature_c, address: 30, type: int16, scale: 0.1,   # src: A1 §4 "30 Temperature of heat sink of converter 2Byte -999~999 0.1℃"
+         asset: inverter, min: -40, max: 150,
+         notes: "the converter heat sink. A1 also has transformer (35), ambient
+                 (36) and SCR (140) temperatures; only one can be
+                 inverter.temperature_c without colliding on the measurements
+                 key, and the converter is the choice. A judgement, not a
+                 source statement"}
+
+      # ── Load ────────────────────────────────────────────────
+      - {id: load_w, metric: load.power_w, address: 49, type: uint16, scale: 100, asset: load,   # src: A1 §4 "49 Load active power 2Byte 0~9999 0.1kW", HPS/PCS/HPSTL
+         notes: "a three-phase total. A1 gives per-phase load currents (53-55)
+                 but no per-phase load power"}
+
+      # ── Generator (DG input) ────────────────────────────────
+      - {id: dg_w, metric: genset.power_w, address: 220, type: uint16, scale: 100,   # src: A1 §4 "220 DG active power 2Byte 0~9999 0.1kW", HPS/PCS
+         asset: diesel_genset, feature: generator}
+
+  - name: state
+    poll_interval_seconds: 60
+    registers:
+      - {id: run_state, metric: inverter.state, address: 180, type: enum, asset: inverter,   # src: A1 §4 "180 Running state … See Fig4.3.1"; §6.6 Figure 4.3.1
+         values: {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8},
+         notes: "A1 Figure 4.3.1: 0 waiting, 1 inspection, 2 on-grid, 3 fault,
+                 4 permanent fault, 5 off-grid, 6 single PV mode, 7 parallel
+                 operation switch to off-grid, 8 parallel operation switch to
+                 on-grid. An unlisted code is refused, not guessed"}
+
+  - name: counters
+    poll_interval_seconds: 300
+    registers:
+      # Every 32-bit counter in A1 is printed as a "High" register followed by
+      # its "Low" register: the HIGH word is at the LOWER address. That is
+      # `uint32`, the opposite of the Deye and SmartGen maps' `uint32_le`.
+      - {id: pv_today_kwh, metric: solar.daily_yield_kwh, address: 62, type: uint16, scale: 0.1,   # src: A1 §4 "62 PV dailypower generation 2Byte 0~65535 0.1KWh"
+         asset: solar_array}
+      - {id: pv_total_kwh, metric: solar.total_yield_kwh, address: 64, type: uint32, scale: 0.1,   # src: A1 §4 "64 PV totalpowergeneration High / 65 … Low 0~999999999 0.1kWh"
+         asset: solar_array}
+      - {id: bat_discharge_kwh, metric: battery.discharge_energy_kwh, address: 68, type: uint32, scale: 0.1,   # src: A1 §4 "68 Total discharge capacity of battery High / 69 Low 0.1kWh"
+         asset: battery}
+      - {id: bat_charge_kwh, metric: battery.charge_energy_kwh, address: 72, type: uint32, scale: 0.1,   # src: A1 §4 "72 Total charge capacity of battery High / 73 Low 0.1kWh"
+         asset: battery}
+      - {id: grid_import_kwh, metric: grid.import_energy_kwh, address: 90, type: uint32, scale: 0.1,   # src: A1 §4 "90 Total power intake from grid High / 91 Low 0~999999999 0.1KWh"
+         asset: grid_connection}
+      - {id: grid_export_kwh, metric: grid.export_energy_kwh, address: 96, type: uint32, scale: 0.1,   # src: A1 §4 "96 Total power fed to grid High / 97 Low 0~999999999 0.1KWh"
+         asset: grid_connection}
+      - {id: dg_total_kwh, metric: genset.energy_kwh, address: 224, type: uint32, scale: 0.1,   # src: A1 §4 "224 Total power intake from DG High / 225 Low 0~999999999 0.1KWh", HPS/PCS
+         asset: diesel_genset, feature: generator,
+         notes: "energy the inverter took in from the DG input — electrical
+                 intake, not fuel. No litre figure follows from this register"}

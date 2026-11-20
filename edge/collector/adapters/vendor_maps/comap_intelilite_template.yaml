@@ -1,0 +1,93 @@
+# ComAp InteliLite NT / IL4 / InteliGen NT — TEMPLATE, NOT A MAP.
+#
+# ComAp addresses "communication objects", and the register-to-object table is
+# exported from the configuration tool for THAT controller's own archive and
+# firmware. There is no fixed public map to ship, so this file carries the
+# metric roles with BLANK addresses and refuses to poll until a technician
+# fills them in. A half-filled export must not sweep and report a clean run
+# over nothing.
+#
+# Procedure: docs/ONBOARDING_GENSET_CONTROLLER.md
+#   1. Export the table of values from LiteEdit / InteliConfig for this unit.
+#   2. Fill every address below, deleting any row this controller lacks.
+#   3. python -m collector.register_probe --vendor-map <your copy>
+#   4. Attach the export to the validation record.
+#
+# SOURCES (full ledger: docs/vendor-integrations/SOURCES.md)
+#   IL-NT-MRS reference guides SW 1.5 (Sept 2009) and SW 2.0 — identical text
+#   victronenergy/dbus-modbus-client comap.py @ fe12d8c9c (register 1053)
+#   Read 18 September 2026.
+#
+# WHAT IS PUBLIC AND FIXED:
+#   - 57600 8N1 RTU is the figure the protocol text states. The same guide
+#     exposes a ModbusComSpeed setpoint selectable across 9600/19200/38400/
+#     57600 and never uses the word "default", so treat 57600 as a starting
+#     point, not a certainty.
+#   - ONE communication object per request, with a minimum 4.096 ms delay
+#     before the response on InteliLite NT. The InteliGen/InteliSys/
+#     InteliMains NT family documents the standard 3.5-character-time rule
+#     instead — a real documented split.
+#   - Modbus TCP port 502, ONE client maximum.
+#   - IL4 needs the CM-RS232-485 module for serial.
+
+vendor: comap
+model_family: InteliLite NT / IL4 / InteliGen NT (per-site export)
+source: >-
+  ComAp IL-NT-MRS reference guides SW 1.5 and SW 2.0 (serial settings, one
+  object per request, 4.096 ms turnaround); victronenergy/dbus-modbus-client
+  comap.py @fe12d8c9 (register 1053); read 2026-09-18. Addresses are
+  per-controller and come from the installation's own exported table.
+verification: community
+notes: >-
+  A template, not a validated map. It loads for inspection and refuses to
+  poll until its addresses are filled from this controller's export. The
+  addresses below are deliberately blank; only the serial framing and the
+  one-object-per-request pacing are public facts.
+
+protocol_defaults:
+  protocol: rtu
+  baudrate: 57600         # src: IL-NT-MRS reference guide, protocol description section
+  parity: N               # src: same, "8 data bits, 1 stop bit, no parity"
+  stopbits: 1
+  bytesize: 8
+  unit_id: 1              # UNVERIFIED — bench required: per-installation
+  function_code: 3        # src: same, "Function 3 (Read Multiply Registers)"
+  address_base: 0         # UNVERIFIED — bench required: confirm against the export's own numbering
+  # One object per request: the controller answers a single object at a time,
+  # so a block read is not available and requests must be spaced.
+  max_gap: 0
+  max_block_words: 2
+  request_spacing_ms: 10  # src: 4.096 ms minimum turnaround on IL-NT; 10 ms is a margin
+
+assets: [diesel_genset]
+
+groups:
+  - name: engine
+    poll_interval_seconds: 30
+    registers:
+      # Every address below is BLANK on purpose. Fill from the export.
+      - {id: start_battery_v, metric: genset.starting_battery_voltage_v, address: ~,   # src: comap.py uses 1053 on IL4 — corroborated only by that code and an unresolved field report, NOT by any ComAp manual. UNVERIFIED — bench required
+         type: uint16, scale: 0.1, asset: diesel_genset}
+      - {id: status, metric: genset.status, address: ~, type: enum, asset: diesel_genset,   # src: per-controller export; the enum table is exported with it
+         values: {0: 0, 1: 1, 2: 2, 3: 3}}
+      - {id: oil_pressure, metric: genset.oil_pressure_kpa, address: ~, type: uint16, asset: diesel_genset}   # src: per-controller export
+      - {id: coolant_temp, metric: genset.coolant_temperature_c, address: ~, type: int16, asset: diesel_genset}   # src: per-controller export
+      - {id: fuel_level, metric: genset.fuel_level_pct, address: ~, type: uint16, asset: diesel_genset, min: 0, max: 100}   # src: per-controller export
+
+  - name: electrical
+    poll_interval_seconds: 30
+    registers:
+      - {id: power_total, metric: genset.power_w, address: ~, type: int32, asset: diesel_genset}   # src: per-controller export; confirm WIDTH and UNIT in the export, not by analogy with DSE
+      - {id: output_voltage, metric: genset.output_voltage_v, address: ~, type: uint16, scale: 0.1, asset: diesel_genset}   # src: per-controller export
+      - {id: frequency, metric: genset.output_frequency_hz, address: ~, type: uint16, scale: 0.1, asset: diesel_genset}   # src: per-controller export
+      - {id: load_pct, metric: genset.load_pct, address: ~, type: uint16, asset: diesel_genset}   # src: per-controller export
+
+  - name: counters
+    poll_interval_seconds: 300
+    registers:
+      - {id: runtime, metric: genset.runtime_hours, address: ~, type: uint32, asset: diesel_genset}   # src: per-controller export; check whether the export gives seconds or hours before setting a scale
+      - {id: energy, metric: genset.energy_kwh, address: ~, type: uint32, scale: 0.1, asset: diesel_genset}   # src: per-controller export
+      - {id: starts, metric: genset.starts, address: ~, type: uint32, asset: diesel_genset}   # src: per-controller export
+
+# No fuel flow. ComAp can be configured to report one where an ECU or flow
+# meter exists, but it is never inferred from load percentage.

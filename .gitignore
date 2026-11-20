@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+bench-data/
+config/adapters.yaml
+config/sms.yaml
+certs/
+.env

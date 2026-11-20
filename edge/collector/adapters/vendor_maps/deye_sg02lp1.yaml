@@ -1,0 +1,99 @@
+# Deye single-phase LOW-VOLTAGE (48 V) hybrid, 10-16 kW.
+#
+# MODELS: SUN-10K / 12K-SG02LP1-EU(-AM3), SUN-14K / 16K-SG01LP1-EU.
+# Choose by RATED POWER (identity registers 16-17), not suffix: an 8 kW
+# SG01LP1 belongs on deye_sg03lp1.
+#
+# Inherits deye_sg03lp1 (explicit `extends:`) and changes two things:
+#
+# 1. A third MPPT (186-188 / 109-114). On a two-tracker unit D says an
+#    unsupported register reads 0x0000, which adds nothing to the total.
+#
+# 2. SCALING THE SOURCES DISAGREE ON. On the larger single-phase units some
+#    power registers are reported in 10 W steps and battery current in
+#    0.1 A steps, and the sources do not agree which, or on which units:
+#      - A ships a separate single_phase_16kw.py
+#        (@ ca730030afd8de397af9398d343bb1894cd653cb) that multiplies grid
+#        power 169 and grid CT 172 by 10 and nothing else;
+#      - B's deye_sensors_deye_sg02lp1.py
+#        (@ abbba3ff13f8d6f772bc669be19e9c9607a6eafe) multiplies 169 by 10
+#        but leaves its neighbours 167/168/170/171 at 1 W;
+#      - C makes it a per-install "modifier" the user picks
+#        ([1, 10, 10] on grid AND load power, "out of date docs"), and its
+#        PR #998 (a SUN-10K-SG02LP1-EU-AM3 owner) added 0.1 A battery current;
+#      - D, the vendor table, says 1 W and 0.01 A throughout.
+#    A 12 kW unit is exactly where a wrong guess reads 1,200 W of import as
+#    12,000 W, or the reverse — a plausible number nothing downstream can
+#    detect. So by the rule in SOURCES.md §1 those registers are OFF by
+#    default. Each is declared at BOTH candidate scales behind a pair of
+#    features; the commissioning probe reads both variants side by side, the
+#    technician compares them with the inverter's own display and enables
+#    exactly one of each pair. Enabling both is refused at start-up (two
+#    registers may never emit one metric for one asset).
+#
+# NOT VALIDATED ON HARDWARE. verification: community.
+
+extends: deye_sg03lp1
+
+vendor: deye
+model_family: >-
+  single-phase LV hybrid 10-16 kW (SUN-10K/12K-SG02LP1, SUN-14K/16K-SG01LP1)
+source: >-
+  inherits deye_sg03lp1's sources; plus kellerza/sunsynk single_phase_16kw.py
+  @ca730030; kbialek/deye-inverter-mqtt deye_sensors_deye_sg02lp1.py
+  @abbba3ff; davidrapan/ha-solarman deye_hybrid.yaml @34c079e0 modifiers and
+  PR #998; read 2026-10-12
+verification: community
+notes: >-
+  Larger single-phase variant. Grid power, load power and battery current
+  ship disabled because the sources disagree about their scale on these
+  units; commissioning picks one scale per pair from the probe's side-by-side
+  reading. Every open question of deye_sg03lp1 applies here too.
+
+features:
+  power_scale_1w: false        # grid 169 + load 178 read in 1 W (D, A for load, C modifier 0)
+  power_scale_10w: false       # grid 169 + load 178 read in 10 W (A for grid, B for grid, C modifier 1/2)
+  battery_current_0_01a: false  # battery current 191 in 0.01 A (A, B, D, C modifier 0/1)
+  battery_current_0_1a: false   # battery current 191 in 0.1 A (C modifier 2, its PR #998)
+
+groups:
+  - name: power
+    registers:
+      # ── Grid: one register, two candidate scales ────────────
+      - {id: grid_w, metric: grid.import_power_w, address: 169, type: int16,   # src: D 169 1 W; C 0xA9 modifier 0
+         asset: grid_connection, split_negative_to: grid.export_power_w, feature: power_scale_1w,
+         notes: "UNVERIFIED — bench required: the 1 W reading of 169. Enable
+                 power_scale_1w only if this matches the display"}
+      - {id: grid_w_x10, metric: grid.import_power_w, address: 169, type: int16, scale: 10,   # src: A single_phase_16kw.py 169 x10; B sg02lp1 169 x10; C 0xA9 modifier 1/2
+         asset: grid_connection, split_negative_to: grid.export_power_w, feature: power_scale_10w,
+         notes: "UNVERIFIED — bench required: the 10 W reading of 169. Enable
+                 power_scale_10w only if this matches the display"}
+
+      # ── Load: same pair, same features ──────────────────────
+      - {id: load_w, metric: load.power_w, address: 178, type: int16, asset: load, feature: power_scale_1w,   # src: D 178 1 W; A 178 (not overridden by single_phase_16kw.py); C 0xB2 modifier 0
+         notes: "UNVERIFIED — bench required: 1 W reading of the LOAD
+                 (backup) port, not whole-house consumption"}
+      - {id: load_w_x10, metric: load.power_w, address: 178, type: int16, scale: 10, asset: load,   # src: C 0xB2 modifier 1/2 only
+         feature: power_scale_10w,
+         notes: "UNVERIFIED — bench required: 10 W reading; only C states it.
+                 A scales grid but not load on 16 kW, so on a unit where the
+                 grid pair needs 10 W check load separately — if they differ,
+                 disable whichever load register is wrong for this site"}
+
+      # ── Battery current: two candidate scales, both negated ─
+      - {id: bat_i, metric: battery.current_a, address: 191, type: int16, scale: -0.01, asset: battery,   # src: A 191 0.01, B sg02lp1 0.01, D 0.01 A; C modifier 0/1
+         feature: battery_current_0_01a,
+         notes: "UNVERIFIED — bench required: 0.01 A, negated so positive =
+                 charging (see deye_sg03lp1)"}
+      - {id: bat_i_x10, metric: battery.current_a, address: 191, type: int16, scale: -0.1, asset: battery,   # src: C 0xBF modifier 2 (ha-solarman PR #998, SUN-10K-SG02LP1-EU-AM3)
+         feature: battery_current_0_1a,
+         notes: "UNVERIFIED — bench required: 0.1 A, one user report"}
+
+      # ── Third MPPT ──────────────────────────────────────────
+      - {id: pv3_w, metric: solar.mppt3_power_w, address: 188, type: uint16, asset: solar_array}   # src: A 188, B sg02lp1 188, C 0xBC, D 188 1 W
+      - {id: pv3_v, metric: solar.mppt3_voltage_v, address: 113, type: uint16, scale: 0.1, asset: solar_array}   # src: A 113, B sg02lp1 113, C 0x71, D 113
+      - {id: pv3_a, metric: solar.mppt3_current_a, address: 114, type: uint16, scale: 0.1, asset: solar_array}   # src: A 114, B sg02lp1 114, C 0x72, D 114
+      - {id: pv_w, metric: solar.pv_power_w, derived: sum, of: [pv1_w, pv2_w, pv3_w], asset: solar_array}
+      # Still all-or-nothing across three strings. Battery power (190), inverter
+      # output (175) and the energy counters keep deye_sg03lp1's scaling: no
+      # source scales them differently on these units.

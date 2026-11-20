@@ -1,0 +1,94 @@
+# GoodWe ET / EH / BT / BH hybrids — local Modbus.
+#
+# SLAVE ADDRESS 247 (0xF7). This is the first thing an installer needs to
+# know: unit 1 gets no reply at all from these models, which reads as a dead
+# bus rather than a wrong address. (DT/MS/D-NS/XS use 127; those are not this
+# map.)
+#
+# Transport: Modbus/TCP 502 on the LAN+WiFi dongle, or RS485 direct. The
+# proprietary UDP 8899 path is NOT usable here and is not configured.
+#
+# SOURCE: marcelblijleven/goodwe @ 66dfcdd9cd947bfd799f2bddb40b4e05ba9db6f6
+# (MIT), goodwe/et.py + modbus.py + sensor.py. Read 18 September 2026.
+# Full ledger: docs/vendor-integrations/SOURCES.md.
+#
+# WORD ORDER: 32-bit values are HIGH word first (the decoder calls
+# int.from_bytes(..., "big")) — the opposite of Deye and Sungrow.
+#
+# NOT VALIDATED ON HARDWARE. verification: community.
+
+vendor: goodwe
+model_family: ET / EH / BT / BH
+source: marcelblijleven/goodwe goodwe/et.py @66dfcdd9 (MIT); read 2026-09-18
+verification: community
+notes: >-
+  Community transcription. Slave 247 and the high-word-first 32-bit order are
+  the two things most likely to be wrong on a first install; both are read
+  from the source rather than assumed.
+
+protocol_defaults:
+  protocol: tcp
+  port: 502
+  unit_id: 247            # src: goodwe/modbus.py — 0xF7 for ET/EH/BT/BH; unit 1 never answers
+  function_code: 3        # src: goodwe/modbus.py
+  address_base: 0         # src: the library passes the printed number straight to the wire
+  max_gap: 8
+  request_spacing_ms: 0
+
+identity:
+  device_timestamp: {address: 35100, type: uint16}   # src: et.py:23 (first word of the running-data block)
+
+assets: [inverter, battery, solar_array, grid_connection]
+
+groups:
+  - name: power
+    poll_interval_seconds: 30
+    registers:
+      - {id: pv1_v, metric: solar.mppt1_voltage_v, address: 35103, type: uint16, scale: 0.1, asset: solar_array}   # src: et.py:24
+      - {id: pv1_a, metric: solar.mppt1_current_a, address: 35104, type: uint16, scale: 0.1, asset: solar_array}   # src: et.py:25
+      - {id: pv1_w, metric: solar.mppt1_power_w, address: 35105, type: uint32, asset: solar_array}   # src: et.py:26 (Power4, high word first)
+      - {id: pv2_v, metric: solar.mppt2_voltage_v, address: 35107, type: uint16, scale: 0.1, asset: solar_array}   # src: et.py:27
+      - {id: pv2_a, metric: solar.mppt2_current_a, address: 35108, type: uint16, scale: 0.1, asset: solar_array}   # src: et.py:28
+      - {id: pv2_w, metric: solar.mppt2_power_w, address: 35109, type: uint32, asset: solar_array}   # src: et.py:29
+      - {id: pv_w, metric: solar.pv_power_w, derived: sum, of: [pv1_w, pv2_w], asset: solar_array}
+      # Two MPPTs only. 35111-35117 carry PV3/PV4 on four-MPPT models; they are
+      # not read here because a two-MPPT unit answers those addresses with
+      # whatever it likes, and the sum above would then be wrong rather than
+      # absent. A four-MPPT site adds them with registers_add.
+
+      - {id: grid_v, metric: grid.voltage_v, address: 35121, type: uint16, scale: 0.1, asset: grid_connection}   # src: et.py:55
+      - {id: grid_hz, metric: grid.frequency_hz, address: 35123, type: int16, scale: 0.01, asset: grid_connection}   # src: et.py:57 (read_freq uses signed)
+      - {id: grid_l1_w, metric: meter.l1_power_w, address: 35125, type: int16, asset: grid_connection}   # src: et.py:59
+      - {id: grid_l2_w, metric: meter.l2_power_w, address: 35130, type: int16, asset: grid_connection}   # src: et.py:64
+      - {id: grid_l3_w, metric: meter.l3_power_w, address: 35135, type: int16, asset: grid_connection}   # src: et.py:69
+
+      - {id: inv_w, metric: inverter.ac_output_power_w, address: 35138, type: int16, asset: inverter}   # src: et.py:73 (total_inverter_power)
+      - {id: grid_w, metric: grid.import_power_w, address: 35140, type: int16,   # src: et.py:75 (active_power, Kind.GRID)
+         asset: grid_connection, split_negative_to: grid.export_power_w,
+         notes: "UNVERIFIED — bench required: the source tags this Kind.GRID and
+                 signed, but states no direction. Positive is ASSUMED to be
+                 import; confirm against the site's own meter"}
+      - {id: inv_temp, metric: inverter.temperature_c, address: 35174, type: int16, scale: 0.1, asset: inverter}   # src: et.py:123 (temperature_air)
+
+      - {id: bat_v, metric: battery.voltage_v, address: 35180, type: uint16, scale: 0.1, asset: battery}   # src: et.py:129
+      - {id: bat_a, metric: battery.current_a, address: 35181, type: int16, scale: 0.1, asset: battery}   # src: et.py:130
+      - {id: bat_w, metric: battery.power_w, address: 35182, type: int32, asset: battery,   # src: et.py:131 (Power4S, high word first)
+         notes: "UNVERIFIED — bench required: sign DIRECTION unconfirmed"}
+
+      - {id: bat_temp, metric: battery.temperature_c, address: 37003, type: int16, scale: 0.1, asset: battery}   # src: et.py:181
+      - {id: bat_charge_a, metric: battery.charge_current_limit_a, address: 37004, type: uint16, asset: battery}   # src: et.py:182
+      - {id: bat_discharge_a, metric: battery.discharge_current_limit_a, address: 37005, type: uint16, asset: battery}   # src: et.py:184
+      - {id: bat_soc, metric: battery.soc_pct, address: 37007, type: uint16, asset: battery, min: 0, max: 100,   # src: vendor integrations spec section 7, citing marcelblijleven/goodwe
+         notes: "UNVERIFIED — bench required: 37007 sits between battery_error_l
+                 (37006) and battery_soh (37008) in the source's own ordering,
+                 but the fetched extract did not list it explicitly. Confirm
+                 against the inverter's display before trusting it"}
+      - {id: bat_soh, metric: battery.soh_pct, address: 37008, type: uint16, asset: battery, min: 0, max: 100}   # src: et.py:188
+
+  - name: energy
+    poll_interval_seconds: 300
+    registers:
+      - {id: pv_total_kwh, metric: solar.total_yield_kwh, address: 35191, type: uint32, scale: 0.1, asset: solar_array}   # src: et.py:144 (Energy4 divides by 10)
+      - {id: pv_today_kwh, metric: solar.daily_yield_kwh, address: 35193, type: uint32, scale: 0.1, asset: solar_array}   # src: et.py:145
+      - {id: grid_export_kwh, metric: grid.export_energy_kwh, address: 35195, type: uint32, scale: 0.1, asset: grid_connection}   # src: et.py:146 (e_total_exp)
+      - {id: grid_import_kwh, metric: grid.import_energy_kwh, address: 35200, type: uint32, scale: 0.1, asset: grid_connection}   # src: et.py:149 (e_total_imp)

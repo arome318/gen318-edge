@@ -1,0 +1,64 @@
+# English SMS templates. Keep each message short (one SMS is 160 characters)
+# and ASCII-only so it fits the GSM alphabet on every phone.
+language_name: English
+faults:
+  battery_critical: "Battery very low ({soc}%). Power will go off soon. Reduce load or start genset."
+  battery_low: "Battery low ({soc}%). Power may go off tonight. Check load and charging."
+  battery_hot: "Battery too hot ({temp}C). Check ventilation and charging now."
+  cell_imbalance: "Battery cells unbalanced ({spread_mv}mV). Check BMS and cells."
+  inverter_fault: "Inverter fault (code {error_code}). Check inverter screen and reset if safe."
+  inverter_hot: "Inverter hot ({temp}C). Check fan, dust and load."
+  overload: "Overload ({load_pct}% of inverter). Reduce load or check new connections."
+  power_off: "Power is OFF (output {voltage}V). Check inverter and breakers."
+  diesel_waste: "Genset running while battery is {soc}%. Check settings or fuel use."
+  comms_lost: "Box cannot read equipment for {minutes} min. Check cables and power to box."
+  box_alert: "Monitoring box alert: {detail}. Check the box."
+  pv_underperform: "Solar panels giving {pct}% of their usual best for {days} days. Check for dust, shade or a dead string."
+  battery_degrading: "Battery voltage drops {drop_pct}% more than normal at heavy load. Check terminals, cables and cells."
+  load_high: "Unusual high load: {actual_w}W, normal is about {expected_w}W. Check for illegal connection or feeder fault."
+  load_low: "Load unusually low: {actual_w}W, normal is about {expected_w}W. Check feeder breakers."
+names:
+  battery_critical: battery very low
+  battery_low: battery low
+  battery_hot: battery hot
+  cell_imbalance: battery cells
+  inverter_fault: inverter fault
+  inverter_hot: inverter hot
+  overload: overload
+  power_off: power is off
+  diesel_waste: genset use
+  comms_lost: box reading equipment
+  box_alert: box alert
+  pv_underperform: solar output low
+  battery_degrading: battery sagging under load
+  load_high: unusual high load
+  load_low: unusual low load
+recovered:
+  battery_critical: battery out of critical level
+  battery_low: battery back above low level
+  battery_hot: battery temperature normal
+  cell_imbalance: battery cells balanced
+  inverter_fault: inverter fault cleared
+  inverter_hot: inverter temperature normal
+  overload: load back within limit
+  power_off: power is back on
+  diesel_waste: genset use normal
+  comms_lost: box reading equipment again
+  box_alert: box alert cleared
+  pv_underperform: solar output back to normal
+  battery_degrading: battery voltage normal
+  load_high: load back to normal
+  load_low: load back to normal
+technician_suffix: " Reply 1=real 2=false 3=other #{ref}"
+cleared: "{site}: OK again: {what}."
+status_on: "{site}: Power ON.{details}"
+status_off: "{site}: Power OFF since {since}. Cause: {cause}. Technician has been told."
+status_unknown: "{site}: No recent data from the monitoring box."
+status_battery: " Battery {soc}%."
+status_solar: " Solar {solar_kw}kW."
+help: "Send POWER for status. Technicians: reply 1, 2 or 3 to an alert. Send LANG EN or LANG PCM to change language."
+label_ok: "Thanks. Alert #{ref} marked: {label}."
+label_none: "No recent alert to mark."
+lang_ok: "Language set to English."
+labels: {"1": "real", "2": "false alarm", "3": "other cause"}
+summary: "{site} today: power on {uptime}% of the time, {alerts} alerts, lowest battery {min_soc}."

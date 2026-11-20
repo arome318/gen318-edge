@@ -1,0 +1,185 @@
+# Felicity Solar IVEM-series hybrid inverter — Modbus RTU over RS232.
+#
+# Felicity is one of the most widely installed inverter brands in Nigeria and
+# one of the few with a local assembly presence. The inverter speaks plain
+# Modbus RTU on the RJ45 socket marked RS232, next to the BMS port.
+#
+# THE PHYSICAL LAYER IS RS232, NOT RS485. This is the single thing most likely
+# to be got wrong on site. The frame format is ordinary Modbus RTU either way,
+# but the wiring is not: an RS485 converter on this port reads nothing. Both
+# sources use a straight USB-to-RS232 lead or a MAX3232 level shifter.
+#
+# SOURCES (full ledger: docs/vendor-integrations/SOURCES.md)
+#   F1 = dj-nitehawk/Felicity-Inverter-Monitor — FelicityInverter.cs. Reads a
+#        single 42-register block, 0x1101-0x112A. The repo does not name which
+#        model it was written against.
+#   F2 = daoudeddy/fsolar_esphome — README register table for the IVEM6048-II
+#        specifically, plus its ESPHome YAML. A much larger map.
+#   Read 19 September 2026.
+#
+# ADDRESSING: straight through, no -1. F1 writes 0x1101 into the frame and
+# indexes every field off that base (battery voltage at offset 7 = 0x1108).
+#
+# WORD ORDER: not applicable. Neither source found a single 32-bit register on
+# this inverter. F1's own application computes running PV watt-hours in
+# software from repeated power polls, which is how it documents that no
+# cumulative energy register was located. So there is no daily or lifetime
+# yield here — unlike every other map in this directory. Yield has to come
+# from the platform integrating power, or from a meter.
+#
+# THREE THINGS ARE DELIBERATELY NOT READ:
+#
+#   Battery current. Three different registers claim the name — 0x1109,
+#     0x1198 and 0x120C — their scales differ across sources (F1 applies none
+#     at 0x1109; F2 gives 0.1 at both of the others), and no source states a
+#     sign convention for either of the two that have a stated scale. Battery
+#     power at 0x110A is read instead, which is what consumers use.
+#
+#   0x1159-0x1169 PV2, generator port and smart-load block. F2 documents the
+#     range but the per-register addresses inside it were not recovered, and a
+#     guessed offset inside a block is exactly how a generator reading ends up
+#     labelled as PV.
+#
+#   0x1200-0x1205 BMS charge and discharge limits. Same problem: the range is
+#     named, the field order inside it is not.
+#
+# IDENTITY: none. Neither source found a model, serial or firmware register
+# anywhere in 0x1101-0x2159. Felicity exposes those through its cloud API, not
+# on the wire. So this map ships without an identity block, and a validation
+# record for a Felicity unit carries no device-reported serial.
+#
+# SENTINEL: Felicity's BATTERY protocol documents 0x7FFF as "register not
+# populated for this pack variant", with a recorded failure of an unfiltered
+# third temperature sensor averaging out to 10947 degC. No source documents a
+# sentinel on the INVERTER side. It is declared below only on the registers
+# the inverter sources from its BMS link, and that is a defensive choice on
+# the strength of the battery-side evidence, not something a source states.
+#
+# NOT VALIDATED ON HARDWARE. verification: community.
+
+vendor: felicity_solar
+model_family: IVEM hybrid
+source: >-
+  dj-nitehawk/Felicity-Inverter-Monitor FelicityInverter.cs (block
+  0x1101-0x112A, model unnamed); daoudeddy/fsolar_esphome README register
+  table for IVEM6048-II + ESPHome yaml; read 2026-09-19
+verification: community
+notes: >-
+  Community transcription, simulator-exercised only. RS232 not RS485. The two
+  sources disagree on baud rate (2400 vs 9600) so the site must confirm it.
+  No identity registers exist on this inverter and no cumulative energy
+  register was found by either source.
+
+protocol_defaults:
+  protocol: rtu
+  # THE BAUD RATE IS DISPUTED. F2 uses 9600 and names its model
+  # (IVEM6048-II); F1 uses 2400 and does not say what it was written against.
+  # 9600 is the default because it is the one attached to a named model. If a
+  # site reads nothing at 9600, set baudrate: 2400 in the site config before
+  # concluding the wiring is wrong.
+  baudrate: 9600          # src: F2 baud_rate: 9600 — F1 uses 2400, see above
+  parity: N               # src: F1 and F2 agree
+  stopbits: 1             # src: F1 and F2 agree
+  bytesize: 8             # src: F1 and F2 agree
+  unit_id: 1              # src: F1 const byte SlaveAddress = 0x01; F2 defaults modbus_address "1"
+  function_code: 3        # src: both read holding registers; neither uses 0x04
+  address_base: 0         # src: F1 writes 0x1101 straight into the frame
+  max_gap: 8
+  request_spacing_ms: 0
+
+assets: [inverter, battery, solar_array, grid_connection]
+optional_assets: [load]
+
+groups:
+  - name: power
+    poll_interval_seconds: 30
+    registers:
+      # ── Battery ─────────────────────────────────────────────
+      - {id: bat_v, metric: battery.voltage_v, address: 4360, type: uint16, scale: 0.01,   # src: F1 regs[7] / 100.0 at 0x1108
+         asset: battery,
+         notes: "scale 0.01, not the 0.1 most vendors use. F2's separate
+                 BMS-link voltage register at 0x120D carries the same ÷100
+                 scale, which is the only independent confirmation of it"}
+      - {id: bat_w, metric: battery.power_w, address: 4362, type: int16, asset: battery,   # src: F1 ChargeStatus(regs[9]) at 0x110A; F2 battery_power S_WORD
+         notes: "UNVERIFIED — bench required. Both sources agree the register
+                 is signed at 0x110A; only F1 states the direction, and it
+                 reads positive as charge, which is the platform convention.
+                 Neither source applies a scale, so this is taken as watts.
+                 Confirm the sign against the unit's own display at
+                 commissioning — the map does not read battery current, so
+                 this is the only battery flow reading there is"}
+      - {id: bat_temp, metric: battery.temperature_c, address: 4387, type: int16,   # src: F2 README 0x1123 battery_temperature
+         asset: battery, min: -40, max: 100, na: [32767],
+         notes: "UNVERIFIED — bench required; F2 only. The 32767 sentinel is
+                 declared defensively: it is documented on Felicity's battery
+                 protocol, not on the inverter's, where an unfiltered third
+                 temperature sensor is recorded averaging to 10947 degC"}
+      - {id: bat_soc, metric: battery.soc_pct, address: 4624, type: uint16, scale: 0.1,   # src: F2 README 0x1210 battery_soc
+         asset: battery, min: 0, max: 100, na: [32767],
+         notes: "UNVERIFIED — bench required; F2 only. Read from the inverter's
+                 BMS link, so the sentinel note on bat_temp applies"}
+      - {id: bat_soh, metric: battery.soh_pct, address: 4625, type: uint16, scale: 0.1,   # src: F2 README 0x1211 battery_soh
+         asset: battery, min: 0, max: 100, na: [32767],
+         notes: "UNVERIFIED — bench required; F2 only"}
+
+      # ── Solar ───────────────────────────────────────────────
+      - {id: pv1_v, metric: solar.mppt1_voltage_v, address: 4390, type: uint16, scale: 0.1,   # src: F1 regs[37] / 10.0 at 0x1126; F2 pv1_voltage scale x * 0.1 — agree
+         asset: solar_array}
+      - {id: pv1_a, metric: solar.mppt1_current_a, address: 4393, type: int16, scale: 0.1,   # src: F2 README 0x1129 pv1_current
+         asset: solar_array, min: 0,
+         notes: "UNVERIFIED — bench required; F2 only. F2 clamps negatives to
+                 zero; the min bound does the same here, so near-zero sensor
+                 noise is flagged suspect rather than published as reverse
+                 current into the array"}
+      - {id: pv1_w, metric: solar.mppt1_power_w, address: 4394, type: int16, asset: solar_array,   # src: F1 regs[41] at 0x112A + its own >0 clamp; F2 pv1_power, also clamped — agree
+         min: 0,
+         notes: "both sources read this address AND both clamp negatives to
+                 zero independently, which is the strongest agreement in this
+                 map. PV2 is not read — see the header"}
+      - {id: pv_w, metric: solar.pv_power_w, derived: sum, of: [pv1_w],   # single-tracker total; PV2's address is not recoverable from either source
+         asset: solar_array, enabled: false,
+         notes: "disabled. A derived sum needs two or more components and only
+                 MPPT1 has a recoverable address, so the array total would be
+                 a rename of MPPT1 rather than a total. Left here, off, so the
+                 absence is visible rather than looking like an oversight"}
+
+      # ── Grid (the inverter's AC input) ──────────────────────
+      - {id: grid_v, metric: grid.voltage_v, address: 4375, type: uint16, scale: 0.1,   # src: F1 regs[22] / 10.0 at 0x1117; F2 ac_input_voltage scale x * 0.1 — agree
+         asset: grid_connection,
+         notes: "F1's own inline comment mislabels this line 0x1111; its
+                 register arithmetic (offset 22 from 0x1101) is 0x1117 and
+                 matches F2. The comment is wrong, the code is right"}
+      - {id: grid_hz, metric: grid.frequency_hz, address: 4377, type: uint16, scale: 0.01,   # src: F2 README 0x1119 ac_input_frequency
+         asset: grid_connection,
+         notes: "UNVERIFIED — bench required; F2 only"}
+      - {id: grid_a, metric: inverter.ac_input_current_a, address: 4502, type: uint16, scale: 0.1,   # src: F2 README 0x1196 ac_input_current
+         asset: inverter,
+         notes: "UNVERIFIED — bench required; F2 only"}
+      - {id: grid_w, metric: inverter.ac_input_power_w, address: 4509, type: uint16, asset: inverter,   # src: F2 README 0x119D ac_input_power
+         notes: "UNVERIFIED — bench required; F2 only"}
+
+      # ── Inverter AC output ──────────────────────────────────
+      - {id: out_v, metric: inverter.ac_output_voltage_v, address: 4369, type: uint16, scale: 0.1,   # src: F1 regs[16] / 10.0 at 0x1111; F2 ac_output_voltage scale x * 0.1 — agree
+         asset: inverter}
+      - {id: out_a, metric: inverter.ac_output_current_a, address: 4503, type: uint16, scale: 0.1,   # src: F2 README 0x1197 ac_output_current
+         asset: inverter,
+         notes: "UNVERIFIED — bench required; F2 only"}
+      - {id: out_hz, metric: inverter.ac_output_freq_hz, address: 4366, type: uint16, scale: 0.01,   # src: F2 README 0x110E inverter_frequency
+         asset: inverter,
+         notes: "UNVERIFIED — bench required; F2 only"}
+      - {id: inv_temp, metric: inverter.temperature_c, address: 4386, type: int16,   # src: F2 README 0x1122 inverter_temperature
+         asset: inverter, min: -40, max: 150, na: [32767],
+         notes: "UNVERIFIED — bench required; F2 only. The unit also reports a
+                 transformer temperature at 0x1121, which is not read: only
+                 one reading can be inverter.temperature_c without colliding
+                 on the measurements key"}
+      - {id: inv_fault, metric: inverter.error_code, address: 4355, type: uint16, asset: inverter,   # src: F2 README 0x1103 inverter_fault_code
+         notes: "UNVERIFIED — bench required; F2 only. Neither source publishes
+                 a code table for this register, so the number travels as
+                 evidence and is not translated into a named fault"}
+
+      # ── Load ────────────────────────────────────────────────
+      - {id: load_w, metric: load.power_w, address: 4382, type: int16, asset: load,   # src: F1 regs[29] at 0x111E; F2 load_power S_WORD — agree on address and meaning
+         notes: "F2 names this load_power and F1 names it LoadWatts at the
+                 same address. F2 also documents an ac_output_power at 0x119E
+                 which is not read, to avoid two names for one quantity"}

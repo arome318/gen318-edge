@@ -1,0 +1,203 @@
+# Deye SUN-5/8/10/12K-SG04LP3 — three-phase LOW-VOLTAGE hybrid.
+#
+# The Nigerian C&I workhorse. Local Modbus RTU on the inverter's own RS485
+# port; no cloud, no vendor terms.
+#
+# SOURCES (see docs/vendor-integrations/SOURCES.md for the full ledger)
+#   A = kellerza/sunsynk, src/sunsynk/definitions/three_phase_common.py
+#       @ 0cd3dc58576ab732c4b87200f5e5f9c5d0428dbc  (Apache-2.0)
+#       and three_phase_lv.py @ c548e67a0d65267d928d6519b93988d2de7eb998
+#   B = kbialek/deye-inverter-mqtt, src/deye_sensors_deye_sg04lp3.py
+#       @ 82fe0f57e64496f77b0f7783996dbdd01b705f88  (Apache-2.0)
+#   Read 18 September 2026. Source B's GENERATED DOCS omit the offset column;
+#   the .py definitions are what was transcribed.
+#
+# NOT VALIDATED ON HARDWARE. verification: community — gate D1 in the spec is
+# open, and nothing here may be described as supported.
+#
+# The two sources disagree on fourteen points. Where they give the same number
+# across this model's operating envelope the safer reading is used and the
+# conflict is named on the line. Where only one source has a register it is
+# marked. Nothing is invented.
+#
+# COMMISSIONING CHECKS (docs/ONBOARDING_DEYE_HYBRID.md):
+#   - sign direction of 590 and 625 against the site's own meter
+#   - whether 650-653 is site load or backup-only load
+#   - RS485 pins, which vary by model and year — read this unit's manual
+
+vendor: deye
+model_family: SG04LP3
+source: >-
+  kellerza/sunsynk three_phase_common.py @0cd3dc58 + three_phase_lv.py @c548e67a;
+  kbialek/deye-inverter-mqtt deye_sensors_deye_sg04lp3.py @82fe0f57; read 2026-09-18
+verification: community
+notes: >-
+  Community transcription, simulator-exercised only. Sign conventions, the
+  RS485 pinout and whether the 650-653 block measures site or backup load are
+  all unconfirmed on a physical unit.
+
+protocol_defaults:
+  protocol: rtu
+  baudrate: 9600          # src: A connection.py ModbusSerialParams default
+  parity: N               # UNVERIFIED — bench required (neither source pins parity; spec says 8N1)
+  stopbits: 1             # UNVERIFIED — bench required
+  bytesize: 8
+  unit_id: 1              # some units ship as 0 — set to 1 in the inverter menu
+  function_code: 3
+  address_base: 0         # src: A reads holding registers at the printed number
+  max_gap: 8
+  request_spacing_ms: 0
+
+# Read once at initialize and shipped as tier-3 evidence, never as telemetry.
+identity:
+  device_type: {address: 0, type: uint16}       # src: A identity.py (0x005 = LV three-phase hybrid)
+  protocol_version: {address: 2, type: uint16}  # src: A identity.py
+  serial: {address: 3, type: string, words: 5}  # src: A identity.py (5-register ASCII)
+  # Decision 4: register 540 (DC transformer / radiator temperature) is
+  # evidence only. 541 is the inverter.temperature_c telemetry reading. Both
+  # would collide on the measurements primary key (time, asset, metric), and
+  # the raw_register tag the spec suggested is not part of that key, so one of
+  # the two readings would silently disappear.
+  dc_transformer_temp_c: {address: 540, type: uint16, scale: 0.1, offset: -100}  # src: A three_phase_common.py:189
+
+assets: [inverter, battery, solar_array, grid_connection]
+optional_assets: [load, diesel_genset]
+
+features:
+  # The gen port is only telemetry when something is actually wired to it.
+  gen_port: false
+
+groups:
+  - name: power
+    poll_interval_seconds: 30
+    registers:
+      # ── Inverter ────────────────────────────────────────────
+      - {id: inv_state, metric: inverter.state, address: 500, type: enum, asset: inverter,   # src: A sensors.py InverterStateSensor
+         values: {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5},
+         notes: "code 5 (activating) is only in source A — UNVERIFIED — bench required"}
+
+      # Four fault words. Decoded as the first set bit's 1-based position; the
+      # raw words travel with the reading so a bench session can build the
+      # code table. Source B has no fault sensor at all.
+      - {id: inv_fault, metric: inverter.error_code, address: 555, type: fault_bits,   # src: A sensors.py FaultSensor (13 named bits of 64)
+         words: 4, asset: inverter,
+         notes: "UNVERIFIED — bench required; only source A decodes 555-558"}
+
+      - {id: inv_temp, metric: inverter.temperature_c, address: 541, type: uint16,   # src: A three_phase_common.py:190 TempSensor
+         scale: 0.1, offset: -100, asset: inverter, min: -20, max: 120,
+         notes: "raw*0.1-100; both sources agree once B's .py is read. Raw treated
+                 unsigned per A; B varies per register — differs only above 3176 degC"}
+
+      - {id: inv_l1_w, metric: inverter.ac_output_l1_power_w, address: 633, type: int16, asset: inverter}   # src: A three_phase_common.py:34
+      - {id: inv_l2_w, metric: inverter.ac_output_l2_power_w, address: 634, type: int16, asset: inverter}   # src: A three_phase_common.py:35
+      - {id: inv_l3_w, metric: inverter.ac_output_l3_power_w, address: 635, type: int16, asset: inverter}   # src: A three_phase_common.py:36
+      # A reads 633-635 as the low words of 32-bit pairs (with 691-693) and
+      # falls back to 16-bit itself when the high word is zero; B reads plain
+      # 16-bit. Identical below 32767 W, which covers every model in this family.
+
+      - {id: inv_l1_v, metric: inverter.ac_output_l1_voltage_v, address: 627, type: uint16, scale: 0.1, asset: inverter}   # src: A three_phase_common.py:38
+      - {id: inv_l2_v, metric: inverter.ac_output_l2_voltage_v, address: 628, type: uint16, scale: 0.1, asset: inverter}   # src: A three_phase_common.py:39
+      - {id: inv_l3_v, metric: inverter.ac_output_l3_voltage_v, address: 629, type: uint16, scale: 0.1, asset: inverter}   # src: A three_phase_common.py:40
+      # UNVERIFIED — bench required. 627-629 is the INVERTER-side output
+      # voltage and exists only in source A; B has no inverter-side voltage at
+      # all. This answers the spec's open "inverter-side V registers to be
+      # confirmed" question with the one reading a source actually gives.
+
+      # ── Grid / PCC ──────────────────────────────────────────
+      - {id: grid_v, metric: grid.voltage_v, address: 598, type: uint16, scale: 0.1, asset: grid_connection}   # src: A three_phase_common.py:56
+      - {id: grid_hz, metric: grid.frequency_hz, address: 609, type: uint16, scale: 0.01, asset: grid_connection}   # src: A three_phase_common.py:51
+      # UNVERIFIED — bench required: 609 is in source A only. Settles the
+      # spec's "freq reg TBC (609 on several maps)".
+
+      - {id: grid_l1_v, metric: meter.l1_voltage_v, address: 598, type: uint16, scale: 0.1, asset: grid_connection}   # src: A three_phase_common.py:56
+      - {id: grid_l2_v, metric: meter.l2_voltage_v, address: 599, type: uint16, scale: 0.1, asset: grid_connection}   # src: A three_phase_common.py:57
+      - {id: grid_l3_v, metric: meter.l3_voltage_v, address: 600, type: uint16, scale: 0.1, asset: grid_connection}   # src: A three_phase_common.py:58
+
+      - {id: grid_l1_w, metric: meter.l1_power_w, address: 622, type: int16, asset: grid_connection}   # src: A three_phase_common.py:52
+      - {id: grid_l2_w, metric: meter.l2_power_w, address: 623, type: int16, asset: grid_connection}   # src: A three_phase_common.py:53
+      - {id: grid_l3_w, metric: meter.l3_power_w, address: 624, type: int16, asset: grid_connection}   # src: A three_phase_common.py:54
+      # UNVERIFIED — bench required: 622-624 are in source A only; B derives
+      # per-phase grid power from the CT blocks at 604-607/616-619 instead.
+
+      # One signed CT total carries both directions. POSITIVE IS ASSUMED TO BE
+      # IMPORT — neither source states the direction, only the signedness.
+      - {id: grid_w, metric: grid.import_power_w, address: 625, type: int16,   # src: A three_phase_common.py:55 gridTotalPac
+         asset: grid_connection, split_negative_to: grid.export_power_w,
+         notes: "UNVERIFIED — bench required: sign DIRECTION is assumed
+                 positive=import. Confirm against the site's own meter under a
+                 known import before trusting either direction"}
+
+      # ── Battery ─────────────────────────────────────────────
+      - {id: bat_soc, metric: battery.soc_pct, address: 588, type: uint16, asset: battery, min: 0, max: 100}   # src: A three_phase_lv.py battery block
+      - {id: bat_v, metric: battery.voltage_v, address: 587, type: uint16, scale: 0.01, asset: battery}   # src: A three_phase_lv.py (LV scale 0.01)
+      - {id: bat_i, metric: battery.current_a, address: 591, type: int16, scale: 0.01, asset: battery}   # src: A three_phase_lv.py
+      - {id: bat_w, metric: battery.power_w, address: 590, type: int16, asset: battery,   # src: A three_phase_lv.py (LV: no x10)
+         notes: "UNVERIFIED — bench required: sign DIRECTION unconfirmed. The
+                 catalogue's canonical direction is positive = charging into
+                 the bank; confirm before the number is used for anything"}
+      - {id: bat_temp, metric: battery.temperature_c, address: 586, type: uint16,   # src: A three_phase_lv.py TempSensor
+         scale: 0.1, offset: -100, asset: battery, min: -30, max: 90}
+
+      # BMS-side block. Only the registers that do NOT duplicate an
+      # inverter-side metric are emitted: measurements is keyed on
+      # (time, asset, metric), so publishing BMS SOC at 214 alongside
+      # inverter SOC at 588 would silently drop one of the two.
+      - {id: bms_charge_v, metric: battery.charge_voltage_v, address: 210, type: uint16, scale: 0.01, asset: battery}   # src: A three_phase_common.py:312
+      - {id: bms_charge_a, metric: battery.charge_current_limit_a, address: 212, type: uint16, asset: battery}   # src: A three_phase_common.py:314
+      - {id: bms_discharge_a, metric: battery.discharge_current_limit_a, address: 213, type: uint16, asset: battery}   # src: A three_phase_common.py:315
+      - {id: bms_alarm, metric: battery.state, address: 220, type: uint16, asset: battery}   # src: A three_phase_common.py:322
+      # UNVERIFIED — bench required: the whole 210-220 BMS block is in source A
+      # only; source B's LV profile has no BMS registers at all.
+
+      # ── PV ──────────────────────────────────────────────────
+      - {id: pv1_w, metric: solar.mppt1_power_w, address: 672, type: uint16, asset: solar_array}   # src: A three_phase_common.py:126
+      - {id: pv2_w, metric: solar.mppt2_power_w, address: 673, type: uint16, asset: solar_array}   # src: A three_phase_common.py:135
+      # A reads these signed, B unsigned. Identical across 0-32767 W and this
+      # family is at most 12 kW, so no reachable reading differs.
+      # UNVERIFIED — bench required.
+
+      - {id: pv_w, metric: solar.pv_power_w, derived: sum, of: [pv1_w, pv2_w], asset: solar_array}
+      # The sum is withheld entirely if either string fails to read: three
+      # strings of four still plots as plant power.
+
+      - {id: pv1_v, metric: solar.mppt1_voltage_v, address: 676, type: uint16, scale: 0.1, asset: solar_array}   # src: A three_phase_common.py:127
+      - {id: pv1_a, metric: solar.mppt1_current_a, address: 677, type: uint16, scale: 0.1, asset: solar_array}   # src: A three_phase_common.py:128
+      - {id: pv2_v, metric: solar.mppt2_voltage_v, address: 678, type: uint16, scale: 0.1, asset: solar_array}   # src: A three_phase_common.py:136
+      - {id: pv2_a, metric: solar.mppt2_current_a, address: 679, type: uint16, scale: 0.1, asset: solar_array}   # src: A three_phase_common.py:137
+
+      # ── Load (optional role) ────────────────────────────────
+      - {id: load_l1_w, metric: load.l1_power_w, address: 650, type: int16, asset: load}   # src: A three_phase_common.py:80
+      - {id: load_l2_w, metric: load.l2_power_w, address: 651, type: int16, asset: load}   # src: A three_phase_common.py:81
+      - {id: load_l3_w, metric: load.l3_power_w, address: 652, type: int16, asset: load}   # src: A three_phase_common.py:82
+      - {id: load_w, metric: load.power_w, address: 653, type: int16, asset: load,   # src: A three_phase_common.py:83
+         notes: "UNVERIFIED — bench required: source A calls 650-653 plain
+                 'Load'; source B publishes the same addresses under ups/ as the
+                 BACKUP load. Which bus this measures decides whether it is site
+                 load or backup-only load — confirm at commissioning, and
+                 disable these registers for this site if it cannot be settled"}
+
+      # ── Generator port (optional role, off by default) ──────
+      - {id: gen_w, metric: genset.power_w, address: 667, type: int16,   # src: A three_phase_common.py:103
+         asset: diesel_genset, feature: gen_port,
+         notes: "UNVERIFIED — bench required. A reads 664-667 as low words of
+                 32-bit pairs, B as plain 16-bit; identical below 65536 W.
+                 Only meaningful when a genset is actually wired to the gen port"}
+
+  - name: energy
+    poll_interval_seconds: 300
+    registers:
+      # Every counter here is uint32 with the LOW word at the LOWER address.
+      # Both sources agree on that; reading them big-endian turns 12.3 kWh into
+      # roughly 806,092 kWh.
+      - {id: pv_today_kwh, metric: solar.daily_yield_kwh, address: 529, type: uint16, scale: 0.1, asset: solar_array}   # src: A three_phase_common.py:169
+      - {id: pv_total_kwh, metric: solar.total_yield_kwh, address: 534, type: uint32_le, scale: 0.1, asset: solar_array}   # src: A three_phase_common.py:176
+
+      - {id: bat_charge_kwh, metric: battery.charge_energy_kwh, address: 516, type: uint32_le, scale: 0.1, asset: battery}   # src: A three_phase_common.py:171
+      - {id: bat_discharge_kwh, metric: battery.discharge_energy_kwh, address: 518, type: uint32_le, scale: 0.1, asset: battery}   # src: A three_phase_common.py:172
+
+      - {id: grid_import_kwh, metric: grid.import_energy_kwh, address: 522, type: uint32_le, scale: 0.1, asset: grid_connection}   # src: A three_phase_common.py:174
+      - {id: grid_export_kwh, metric: grid.export_energy_kwh, address: 524, type: uint32_le, scale: 0.1, asset: grid_connection}   # src: A three_phase_common.py:173
+      # The daily counters at 514/515 (battery) and 520/521 (grid) are read by
+      # both sources but have no catalogue metric and are deliberately not
+      # emitted. They remain available to the validation probe as a cross-check
+      # against these lifetime counters.

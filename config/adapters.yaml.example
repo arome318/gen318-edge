@@ -1,0 +1,121 @@
+# Gen318 Edge Hardware Adapter Configuration (Doc 15)
+#
+# Site-specific hardware configuration for the collector container.
+# Mount this file at /config/adapters.yaml (read-only) in docker-compose.
+#
+# Each adapter has:
+#   name     - unique identifier (used in status/API endpoints)
+#   enabled  - toggle without removing config
+#   type     - adapter class to instantiate (see ADAPTER_REGISTRY)
+#   config   - adapter-specific connection and mapping settings
+#
+# Secrets can reference environment variables with ${ENV_VAR} syntax.
+
+site_id: "site-uuid-here"
+tenant_id: "tenant-uuid-here"
+
+adapters:
+  # ── Victron MQTT (real-time via GX device MQTT broker) ──────
+  - name: victron_mqtt
+    enabled: true
+    type: victron_mqtt
+    config:
+      broker_host: 192.168.1.1       # GX device local IP
+      broker_port: 1883
+      portal_id: "abc123def456"      # Victron portal ID (from VRM)
+      instances:
+        solarcharger: [0]             # MPPT charger instance IDs
+        vebus: [0]                    # Multi/Quattro instance IDs
+        battery: [0]                  # Battery monitor instance IDs
+      asset_mappings:
+        system: "asset-uuid-inverter"
+        solarcharger_0: "asset-uuid-solar"
+        vebus_0: "asset-uuid-inverter"
+        battery_0: "asset-uuid-battery"
+      # No control topic is inferred from telemetry. Add only topics verified
+      # against the commissioned GX/PLC configuration.
+      write_topics: {}
+
+  # ── Victron Modbus TCP (register-level polling) ─────────────
+  - name: victron_modbus
+    enabled: true
+    type: victron_modbus
+    config:
+      host: 192.168.1.1
+      port: 502
+      poll_interval_seconds: 60      # 5-60s configurable
+      timeout_ms: 3000
+      retries: 3
+      unit_ids: [100, 225, 246, 247]
+      asset_mappings:
+        "100": "asset-uuid-system"
+        "225": "asset-uuid-battery"
+        "246": "asset-uuid-inverter"
+        "247": "asset-uuid-solar"
+      # Explicit allowlist: read registers are never presumed writable.
+      write_mappings: {}
+
+  # ── BYD Battery-Box CAN Bus ─────────────────────────────────
+  - name: byd_can
+    enabled: false
+    type: byd_can
+    config:
+      interface: can0                 # Linux CAN interface
+      bitrate: 500000                 # 500 kbps
+      asset_id: "asset-uuid-battery"
+
+  # ── Okra Solar Harvest API ──────────────────────────────────
+  - name: okra_harvest
+    enabled: false
+    type: okra_harvest
+    config:
+      api_url: "https://api.okrasolar.com/v1"
+      api_key: "${OKRA_API_KEY}"
+      site_id: "okra-site-id"
+      poll_interval_seconds: 300      # 5 minutes
+      asset_mappings:
+        hub: "asset-uuid-okra-hub"
+        nodes: {}                     # populated dynamically from API
+
+  # ── Generic Modbus (diesel genset example) ──────────────────
+  - name: diesel_genset
+    enabled: true
+    type: generic_modbus
+    config:
+      protocol: rtu
+      port: /dev/ttyUSB0
+      baudrate: 9600
+      unit_id: 1
+      timeout_ms: 3000
+      retries: 3
+      poll_interval_seconds: 60
+      asset_id: "asset-uuid-genset"
+      registers:
+        - metric: genset.power_w
+          address: 100
+          type: uint16
+          scale: 1.0
+          function_code: 4
+        - metric: genset.runtime_hours
+          address: 101
+          type: uint32
+          scale: 0.1
+          function_code: 4
+        - metric: genset.fuel_level_pct
+          address: 103
+          type: uint16
+          scale: 0.1
+          function_code: 4
+        - metric: genset.status
+          address: 104
+          type: uint16
+          scale: 1
+          function_code: 4
+      # Example only — replace address/type/scale with the commissioned
+      # controller map before enabling dispatch actuation.
+      write_mappings:
+        genset.run_command:
+          address: 200
+          type: uint16
+          scale: 1.0
+          unit_id: 1

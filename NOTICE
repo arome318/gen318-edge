@@ -3,6 +3,21 @@ Copyright 2026 Abraham Arome Onoja and the Gen318 Edge contributors
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
+Trademarks. "Gen318" and the Gen318 logo (the ring-bus mark and the GEN318
+wordmark, including the copies in edge/api/static/favicon.svg and the lockup
+drawn in edge/api/page.py) are trademarks of Gen318. They are not licensed
+under the Apache License, Version 2.0: section 6 of that licence grants no
+permission to use the licensor's trade names, trademarks or logos. You may
+run and share this software with the name and logo as shipped, and say
+truthfully that your work is based on Gen318 Edge. If you distribute a
+modified version, replace the name and logo with your own.
+
+Bundled fonts (edge/api/static/fonts/), so the local page works offline:
+  IBM Plex Sans and IBM Plex Mono, Copyright IBM Corp., SIL Open Font
+  License 1.1 (OFL-IBM-Plex.txt).
+  Archivo, Copyright The Archivo Project Authors, SIL Open Font License 1.1
+  (OFL-Archivo.txt).
+
 Third-party runtime dependencies (installed separately, not bundled):
   fastapi (MIT), uvicorn (BSD-3-Clause), httpx (BSD-3-Clause),
   cryptography (Apache-2.0 OR BSD-3-Clause), paho-mqtt (EPL-2.0 OR BSD-3-Clause),

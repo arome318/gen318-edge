@@ -208,3 +208,113 @@ class TestEdgeAPIEndpoints:
         assert (await api_client.get("/sms/tuning")).json() == []
         page = (await api_client.get("/")).text
         assert "Not enough samples yet" in page and "Nothing changed" in page and "No SMS yet" in page
+
+
+class TestLocalPage:
+    """The technician page: renders, is self-contained, and tells stale data from live."""
+
+    @pytest.mark.asyncio
+    async def test_page_renders_with_brand_and_live_figures(self, api_client: AsyncClient) -> None:
+        resp = await api_client.get("/")
+        assert resp.status_code == 200 and resp.headers["content-type"].startswith("text/html")
+        page = resp.text
+        assert 'aria-label="Gen318"' in page and 'class="lockup"' in page      # logo inline, no image request
+        assert 'href="static/page.css"' in page and 'src="static/page.js"' in page
+        assert 'data-refresh="30"' in page and "<noscript>" in page
+        # KPI tiles from the seeded readings: battery 75 %, solar 42 kW
+        assert '<div class="card kpi battery">' in page and "75<small>%</small>" in page
+        assert "42.00<small>kW</small>" in page
+        assert 'class="chip ok"' in page and "Comms OK" in page and 'class="kpis"' in page
+        for block in ("kpis", "comms", "feed", "alerts", "learned", "tuning", "energy", "readings"):
+            assert f'id="{block}" data-live' in page
+
+    @pytest.mark.asyncio
+    async def test_page_needs_nothing_from_the_internet(self, api_client: AsyncClient) -> None:
+        """A box on a mini-grid has no internet: no CDN, no web fonts, no remote script."""
+        import re
+        from pathlib import Path
+
+        import api.main as api_mod
+
+        static = Path(api_mod.__file__).parent / "static"
+        remote_url = re.compile(r"""(?:https?:)?//[\w.-]+\.[a-z]{2,}[^\s"')]*""")
+        assert remote_url.findall('<link href="https://fonts.googleapis.com/css2?family=X">')  # the check can fail
+        sources = [(await api_client.get("/")).text, (static / "page.css").read_text(),
+                   (static / "page.js").read_text()]
+        for text in sources:
+            remote = [u for u in remote_url.findall(text) if "www.w3.org" not in u]
+            assert remote == []
+        for path, kind in (("/static/page.css", "text/css"), ("/static/page.js", "javascript"),
+                           ("/static/favicon.svg", "svg"),
+                           ("/static/fonts/ibm-plex-mono-latin-600-normal.woff2", "font"),
+                           ("/static/fonts/archivo-latin-wdth-normal.woff2", "font")):
+            resp = await api_client.get(path)
+            assert resp.status_code == 200 and kind in resp.headers["content-type"], path
+        # every font the stylesheet names is bundled, with its licence
+        css = (static / "page.css").read_text()
+        fonts = re.findall(r'url\("fonts/([^"]+)"\)', css)
+        assert len(fonts) == 7
+        for name in fonts:
+            assert (static / "fonts" / name).is_file(), name
+        assert (static / "fonts" / "OFL-IBM-Plex.txt").is_file() and (static / "fonts" / "OFL-Archivo.txt").is_file()
+
+    @pytest.mark.asyncio
+    async def test_fragment_and_theme(self, api_client: AsyncClient) -> None:
+        full = (await api_client.get("/")).text
+        frag = (await api_client.get("/", params={"fragment": 1})).text
+        assert "<script" not in frag and "<head>" not in frag and 'id="feed" data-live' in frag
+        assert frag.count("data-live") == full.count("data-live")
+        assert "data-theme" not in full
+        assert '<html lang="en" data-theme="dark"' in (await api_client.get("/", params={"theme": "dark"})).text
+        assert 'data-theme="light"' in (await api_client.get("/", params={"theme": "light"})).text
+        assert (await api_client.get("/", params={"theme": "pink"})).status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_stale_readings_dim_and_lost_comms_shows(
+        self, api_client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        import api.main as api_mod
+
+        # fresh readings, 30-second comms-lost threshold: fine
+        cfg = tmp_path / "sms.yaml"
+        cfg.write_text("site_name: Kuje <Mini-grid>\nthresholds: {comms_lost_s: 30}\n")
+        monkeypatch.setenv("SMS_CONFIG_PATH", str(cfg))
+        page = (await api_client.get("/")).text
+        assert "<h1>Kuje &lt;Mini-grid&gt;</h1>" in page and "Comms OK" in page
+
+        real = api_mod.time.time
+        monkeypatch.setattr(api_mod.time, "time", lambda: real() + 120)   # two minutes with no reading
+        page = (await api_client.get("/")).text
+        assert 'class="chip danger"' in page and "Comms lost &middot; 2 min" in page
+        assert 'class="kpis stale"' in page and "As of " in page
+
+    @pytest.mark.asyncio
+    async def test_sms_feed_is_bubbles_with_who_and_when(
+        self, api_client: AsyncClient, tmp_path, monkeypatch
+    ) -> None:
+        import api.main as api_mod
+        from sms.store import SmsStore
+
+        now = time.time()
+        store = SmsStore(str(tmp_path / "sms.db"))
+        ref = store.new_ref()
+        store.record_alert(ref, "comms_lost", "critical", "site", {"minutes": 1}, now)
+        store.record_delivery(ref, "+2348030000001", "technician", "alert", True, now, "Kuje: Box cannot read equipment")
+        store.record_inbound("+2348030000009", "status", now + 1)
+        store.record_delivery(None, "+2348030000009", "community", "reply", True, now + 1, "Kuje: Power ON.")
+        store.record_inbound("+2348030000001", "label", now + 2)
+        store.record_label(ref, 1, "", "+2348030000001", now + 2)
+        store.close()
+        monkeypatch.setattr(api_mod, "SMS_DB_PATH", str(tmp_path / "sms.db"))
+
+        page = (await api_client.get("/")).text
+        feed = page[page.index('id="feed"'):page.index('class="foot"', page.index('id="feed"'))]
+        assert feed.count('class="msg out"') == 2 and feed.count('class="msg in"') == 2
+        assert "Box &rarr; technician" in feed and "Box &rarr; community" in feed
+        assert '<div class="bubble">POWER</div>' in feed and "Phone &rarr; box" in feed
+        assert '<div class="bubble">1</div>' in feed and "Technician &rarr; box" in feed
+        # oldest first: the alert, the question, its reply, then the technician's 1
+        order = [feed.index(x) for x in ("cannot read equipment", ">POWER<", "Power ON.", ">1<")]
+        assert order == sorted(order)
+        assert "2348030000001" not in page and "2348030000009" not in page
+        assert '<span class="badge critical">critical</span>' in page and "marked real" in page

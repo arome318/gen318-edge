@@ -195,7 +195,8 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 curl -s -o /dev/null "$URL/health" || fail "the local page did not come up in 60 seconds (see $DEMO/box.log)."
-[ -n "${NO_OPEN:-}" ] || open "$URL"
+# ?theme=dark: the video is always Midnight Volt, whatever this Mac's appearance is.
+[ -n "${NO_OPEN:-}" ] || open "$URL/?theme=dark"
 
 cat <<TEXT
 

@@ -211,6 +211,15 @@ class SmsStore:
         keys = ("ref", "code", "severity", "asset_id", "raised_at", "cleared_at", "label")
         return [dict(zip(keys, r, strict=True)) for r in rows]
 
+    def recent_labels(self, limit: int = 60) -> list[dict[str, Any]]:
+        """Technician replies (1, 2 or 3) with the time each arrived, newest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT received_at, label, ref FROM labels ORDER BY received_at DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [{"at": r[0], "label": r[1], "ref": r[2]} for r in rows]
+
     def get_meta(self, key: str) -> str | None:
         with self._lock:
             row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()

@@ -97,7 +97,7 @@ arrive, or text POWER to it. No Docker, inverter or SIM needed.
 
 ## Status
 
-This is early. The software is tested (950+ automated tests, simulators and
+This is early. The software is tested (960+ automated tests, simulators and
 emulated field protocols), but **every vendor map is marked `community`:
 transcribed from public sources and not yet polled on a physical unit.**
 Each map moves to `bench` and then `field` only with a validation record.

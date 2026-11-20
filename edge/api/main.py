@@ -19,6 +19,7 @@ import structlog
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from common.config import EdgeConfig, load_config
 from common.database import EdgeDatabase
@@ -138,6 +139,14 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     lifespan=lifespan,
+)
+
+# Styles, script, fonts and favicon for the local page. Served by the box
+# itself: the page must work with no internet.
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")),
+    name="static",
 )
 
 
@@ -352,7 +361,6 @@ async def config() -> dict[str, Any]:
 # ── Technician page and SMS record (Gen318 Edge) ─────────────────
 
 SMS_DB_PATH = os.environ.get("SMS_DB_PATH", "/data/sms/sms.db")
-LABEL_NAMES = {1: "real", 2: "false alarm", 3: "other cause"}
 
 
 def _sms_alerts(limit: int = 30) -> list[dict[str, Any]]:
@@ -383,9 +391,6 @@ async def sitelearn_status() -> dict[str, Any]:
     return _sitelearn_status()
 
 
-INBOUND_NAMES = {"status": "asked for power status", "label": "marked an alert",
-                 "lang": "changed language", "reset": "reset alert sensitivity",
-                 "help": "asked for help", "unknown": "sent a message the box did not understand"}
 PAGE_REFRESH_SECONDS = max(2, int(os.environ.get("PAGE_REFRESH_SECONDS", "30")))
 
 
@@ -491,96 +496,79 @@ async def sms_alerts(limit: int = Query(30, ge=1, le=500)) -> list[dict[str, Any
     return _sms_alerts(limit)
 
 
-def _esc(value: Any) -> str:
-    import html
+def _sms_settings() -> dict[str, Any]:
+    """The few SMS settings the page needs to show: site name, time zone, thresholds."""
+    raw: dict[str, Any] = {}
+    try:
+        import yaml
 
-    return html.escape(str(value))
+        with open(os.environ.get("SMS_CONFIG_PATH", "/config/sms.yaml")) as fh:
+            loaded = yaml.safe_load(fh)
+        raw = loaded if isinstance(loaded, dict) else {}
+    except (OSError, ValueError):
+        pass
+    thresholds = raw.get("thresholds") if isinstance(raw.get("thresholds"), dict) else {}
+
+    def number(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "site_name": str(raw.get("site_name") or "").strip(),
+        "utc_offset_hours": number(raw.get("utc_offset_hours"), 1.0),
+        "comms_lost_s": number(thresholds.get("comms_lost_s"), 600.0),
+        "outage_voltage_v": number(thresholds.get("outage_voltage_v"), 150.0),
+    }
+
+
+def _sms_labels(limit: int = 60) -> list[dict[str, Any]]:
+    if not os.path.exists(SMS_DB_PATH):
+        return []
+    from sms.store import SmsStore
+
+    store = SmsStore(SMS_DB_PATH)
+    try:
+        return store.recent_labels(limit)
+    finally:
+        store.close()
 
 
 @app.get("/", response_class=HTMLResponse)
-async def technician_page() -> str:
-    """Plain page for a technician's phone on the site Wi-Fi. No internet needed."""
-    assert _db is not None
-    readings = _db.get_latest_readings()
-    rows = "".join(
-        f"<tr><td>{_esc(r.get('asset_id'))}</td><td>{_esc(r.get('metric_name'))}</td>"
-        f"<td>{_esc(round(float(r.get('value', 0)), 2))}</td></tr>"
-        for r in readings[:200]
-    )
-    alerts = "".join(
-        f"<tr><td>#{_esc(a['ref'])}</td><td>{_esc(a['code'].replace('_', ' '))}</td>"
-        f"<td>{_esc(a['severity'])}</td>"
-        f"<td>{_esc(time.strftime('%d %b %H:%M', time.gmtime(a['raised_at'] + 3600)))}</td>"
-        f"<td>{'open' if a['cleared_at'] is None else 'cleared'}</td>"
-        f"<td>{_esc(LABEL_NAMES.get(a['label'], '-') if a['label'] else '-')}</td></tr>"
-        for a in _sms_alerts()
-    )
-    learned = "".join(
-        f"<tr><td>{_esc(k.split(':')[0])} ({_esc(k.split(':')[1])})</td>"
-        f"<td>{_esc(time.strftime('%d %b %H:%M', time.gmtime(v['trained_at'] + 3600)))}</td>"
-        f"<td>{_esc(v.get('days', '-'))}</td></tr>"
-        for k, v in sorted(_sitelearn_status().items())
-        if isinstance(v, dict) and k.count(":") == 1 and "trained_at" in v
-    )
-    def _when(ts: float) -> str:
-        return time.strftime("%d %b %H:%M:%S", time.gmtime(ts + 3600))
+async def technician_page(
+    fragment: int = Query(0, ge=0, le=1, description="1 = only the content, for in-place updates"),
+    theme: str | None = Query(None, pattern="^(dark|light)$", description="Force a theme"),
+) -> str:
+    """The page for a technician's phone on the site Wi-Fi. No internet needed.
 
-    messages = "".join(
-        (f"<tr><td>{_esc(_when(m['at']))}</td><td>Box &rarr; {_esc(m['role'])}</td>"
-         f"<td>{_esc(m['text'] or '(' + m['kind'] + ')')}{'' if m['ok'] else ' <b>(not sent)</b>'}</td></tr>")
-        if m["direction"] == "out" else
-        (f"<tr class=\"in\"><td>{_esc(_when(m['at']))}</td><td>Phone &rarr; box</td>"
-         f"<td><i>Someone {_esc(INBOUND_NAMES.get(m['kind'], m['kind']))}</i></td></tr>")
-        for m in _sms_messages()
-    )
-    tuning = "".join(
-        f"<tr><td>{_esc(t['code'].replace('_', ' '))}</td><td>{_esc(t['steps'])} of {_esc(t['max_steps'])}</td>"
-        f"<td>{_esc(t.get('was', '-'))}</td><td>{_esc(t.get('now', 'set by the model'))}</td></tr>"
-        for t in _sms_tuning()
-    )
-    en = _energy()
-    if en.get("available"):
-        share = (f", about {_esc(en['share_of_site_pct'])}% of what the site used in the last day"
-                 if "share_of_site_pct" in en else "")
-        box_energy = (f"About {_esc(en['average_watts'])} W, {_esc(en['wh_per_day'])} Wh a day "
-                      f"({_esc(en['method'])}){share}.")
-    else:
-        box_energy = "Not enough samples yet (needs about an hour)."
-    models = en["models"]
-    box_models = (f"{_esc(models['count'])} model files, {_esc(round(models['bytes'] / 1024))} kB in all; "
-                  f"the last training took {_esc(models['last_training_seconds'])} s on this box."
-                  if models["count"] else "No models trained yet.")
-    return f"""<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="{PAGE_REFRESH_SECONDS}"><title>Gen318 Edge</title>
-<style>body{{font-family:system-ui,sans-serif;margin:16px;color:#111;background:#fff}}
-table{{border-collapse:collapse;width:100%;font-size:14px;margin-bottom:24px}}
-td,th{{border-bottom:1px solid #ddd;padding:6px;text-align:left}}h1{{font-size:20px}}
-h2{{font-size:16px;margin-top:24px}}p{{color:#555;font-size:13px}}
-tr.in td{{color:#555}}</style></head><body>
-<h1>Gen318 Edge &middot; {_esc(_config.device_id if _config else '')}</h1>
-<p>Works offline. Page refreshes every {PAGE_REFRESH_SECONDS} seconds. Times are WAT.</p>
-<h2>SMS</h2><p>What the box has sent, newest first. Phone numbers are never shown or stored.</p>
-<table><tr><th>Time</th><th>Who</th><th>Message</th></tr>
-{messages or '<tr><td colspan="3">No SMS yet.</td></tr>'}</table>
-<h2>Alerts</h2><p>To mark an alert, reply to its SMS: 1 = real, 2 = false alarm, 3 = other cause.</p>
-<table><tr><th>Ref</th><th>Fault</th><th>Level</th><th>Raised</th><th>Status</th><th>Marked</th></tr>
-{alerts or '<tr><td colspan="6">No alerts yet.</td></tr>'}</table>
-<h2>What this box has learned</h2>
-<p>Models train here from this site's own data: solar, load and battery run-out after 7 days, battery health after 14.</p>
-<table><tr><th>Model</th><th>Trained</th><th>Days of data</th></tr>
-{learned or '<tr><td colspan="3">Still collecting data.</td></tr>'}</table>
-<h2>Alert sensitivity changed by your replies</h2>
-<p>Three false-alarm replies in the last five make a warning less sensitive (two steps at most).
-A reply of 1 (real), or RESET TUNING, puts it back. Critical alerts never change.</p>
-<table><tr><th>Warning</th><th>Step</th><th>Installer set</th><th>Now</th></tr>
-{tuning or '<tr><td colspan="4">Nothing changed: all warnings are at the installer settings.</td></tr>'}</table>
-<h2>What this box itself uses</h2>
-<p>{box_energy}<br>{box_models}</p>
-<h2>Latest readings</h2>
-<table><tr><th>Asset</th><th>Metric</th><th>Value</th></tr>
-{rows or '<tr><td colspan="3">No readings yet.</td></tr>'}</table>
-</body></html>"""
+    Dark by default; light when the phone asks for it (sunlight). ``page.js``
+    calls this again with ``?fragment=1`` every few seconds and swaps in what
+    changed, so the page never reloads.
+    """
+    assert _db is not None
+    from api import page
+
+    settings = _sms_settings()
+    device_id = _config.device_id if _config else ""
+    state = {
+        "now": time.time(),
+        "device_id": device_id,
+        "site_name": settings["site_name"] or device_id or "Gen318 Edge",
+        "utc_offset_hours": settings["utc_offset_hours"],
+        "comms_lost_s": settings["comms_lost_s"],
+        "outage_voltage_v": settings["outage_voltage_v"],
+        "refresh": PAGE_REFRESH_SECONDS,
+        "theme": theme,
+        "readings": _db.get_latest_readings(),
+        "messages": _sms_messages(40),
+        "labels": _sms_labels(),
+        "alerts": _sms_alerts(),
+        "learned": _sitelearn_status(),
+        "tuning": _sms_tuning(),
+        "energy": _energy(),
+    }
+    return page.render(state, fragment=bool(fragment))
 
 
 if __name__ == "__main__":

@@ -99,8 +99,16 @@ if [ ! -x "$PY" ]; then
 fi
 
 # ── 2. nothing else on the ports ───────────────────────────────
-if [ -f "$POINTER" ] && [ -d "$(cat "$POINTER")" ]; then
-  fail "the demo is already running in another terminal. Press Ctrl-C there first."
+if [ -f "$POINTER" ]; then
+  OLD=$(cat "$POINTER")
+  OLD_PID=$(cat "$OLD/demo.pid" 2> /dev/null || true)
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2> /dev/null; then
+    fail "the demo is already running in another terminal. Press Ctrl-C there first."
+  fi
+  # An earlier run ended without tidying up (its window was closed, or the Mac
+  # slept). Nothing of it is running, so clear what it left and carry on.
+  case "$OLD" in */gen318-demo.*) rm -rf "$OLD" ;; esac
+  rm -f "$POINTER"
 fi
 if nc -z 127.0.0.1 8080 2> /dev/null; then
   fail "port 8080 is in use, so the local page cannot start. Stop what is using it (for the Docker stack: docker compose down) and run this again."
@@ -110,6 +118,7 @@ fi
 DEMO=$(mktemp -d "${TMPDIR:-/tmp}/gen318-demo.XXXXXX")
 mkdir -p "$DEMO/sms" "$DEMO/models"
 echo "$DEMO" > "$POINTER"
+echo $$ > "$DEMO/demo.pid"
 ASSET=$("$PY" -c "import uuid; print(uuid.uuid4())")
 
 cat > "$DEMO/adapters.yaml" <<YAML
@@ -141,7 +150,7 @@ grep -q 'poll_interval_seconds: 5' "$DEMO/vendor_maps/felicity_hybrid.yaml" \
   || fail "could not shorten the poll interval in the demo's copy of the Felicity map."
 
 cat > "$DEMO/sms.yaml" <<YAML
-site_name: Demo Mini-grid
+site_name: Kuje Mini-grid
 default_lang: en
 technicians:
   - {name: Technician, phone: "$TECH_PHONE", lang: en}
@@ -162,7 +171,7 @@ YAML
 BOX_PID=""
 SOCAT_PID=""
 cleanup() {
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM HUP
   [ -n "$BOX_PID" ] && kill "$BOX_PID" 2> /dev/null || true
   stop_emulator "$DEMO"
   [ -n "$SOCAT_PID" ] && kill "$SOCAT_PID" 2> /dev/null || true
@@ -172,7 +181,7 @@ cleanup() {
   say ""
   say "Demo stopped. Temporary files removed."
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP    # HUP: the Terminal window was closed
 
 socat "pty,raw,echo=0,link=$DEMO/inv" "pty,raw,echo=0,link=$DEMO/box" 2> "$DEMO/socat.log" &
 SOCAT_PID=$!
